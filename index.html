@@ -2277,7 +2277,7 @@ body.connect-public-mode #page-connect { display:flex !important; }
       <div class="auth-logo-wordmark">
         <div class="auth-logo-main">LEAX <span>| SJT</span></div>
       </div>
-      <div class="auth-logo-sub">by Grupo RAF · Sistema de Gestión Jurídica</div>
+      <div class="auth-logo-sub">Software Jurídico &amp; LegalTech · Grupo RAF</div>
       <div class="auth-logo-divider"></div>
     </div>
 
@@ -3870,7 +3870,6 @@ const DB_USUARIOS = [
   // Compatibilidad temporal con vistas administrativas heredadas.
   // Las credenciales ya NO viven en el frontend: Supabase Auth es la fuente de autenticación.
   { id:'u0',  nombre:'RAF — System Owner', email:'raf@sistema.com',  rol:'superadmin', empresaId:null, activo:true, avatar:'⚡' },
-  { id:'u99', nombre:'Yamil',              email:'yamil@nexlex.com', rol:'admin',      empresaId:'e1', activo:true, avatar:'YA' },
 ];
 
 let DB_JURIS = {
@@ -6048,7 +6047,7 @@ function deleteConsulta(id) {
   let list = getStoredConsultas();
   list = list.filter(c => c.id !== id);
   try { _storage.setItem(CONNECT_STORAGE_KEY, JSON.stringify(list)); } catch {}
-  try { _storage.setItem(INBOX_KEY, JSON.stringify(getInboxConsultas().filter(c => c.id !== id))); } catch {}
+  saveInboxCache(getInboxConsultas().filter(c => c.id !== id));
   renderConnectList();
   updateConnectStats();
   toast('Consulta eliminada', 'ok');
@@ -6059,12 +6058,13 @@ function deleteConsulta(id) {
    Abogados ven todas las consultas recibidas
 ══════════════════════════════════════════ */
 const INBOX_KEY = 'nexlex_inbox_v1';
-
-function getInboxConsultas() {
+let _inboxCache = (() => {
   try { return JSON.parse(_storage.getItem(INBOX_KEY) || '[]').map(normalizeConsulta); } catch { return []; }
-}
+})();
+function getInboxConsultas() { return _inboxCache; }
+function saveInboxCache(list) { _inboxCache = Array.isArray(list) ? list.map(normalizeConsulta) : []; }
 
-function saveToInbox(consulta) {
+async function saveToInbox(consulta) {
   const list = getInboxConsultas();
   const ahora = new Date().toISOString();
   const item = {
@@ -6080,17 +6080,32 @@ function saveToInbox(consulta) {
     fechaLectura: consulta.fechaLectura || '',
     fechaRespuesta: consulta.fechaRespuesta || ''
   };
+
   const idx = list.findIndex(c => c.id === item.id);
+  const previous = idx >= 0 ? { ...list[idx] } : null;
   if (idx >= 0) list[idx] = { ...list[idx], ...item };
   else list.unshift(item);
-  try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {}
-  // Guardar en Supabase (funciona desde cualquier navegador)
-  _supaInsertConsulta(item);
+  saveInboxCache(list);
+
+  const persisted = await _supaInsertConsulta(item);
+  if (!persisted) {
+    if (idx >= 0 && previous) list[idx] = previous;
+    else {
+      const pos = list.findIndex(c => c.id === item.id);
+      if (pos >= 0) list.splice(pos, 1);
+    }
+    saveInboxCache(list);
+    updateInboxBadge();
+    return false;
+  }
+
+  try { _storage.removeItem(INBOX_KEY); } catch {}
   updateInboxBadge();
   if (isConnectPrivateMode()) {
     if (_connectActiveTab === 'inbox') renderInbox();
     if (document.getElementById('inbox-page-list')) renderInboxPage();
   }
+  return true;
 }
 
 function updateInboxBadge() {
@@ -6123,12 +6138,12 @@ function renderInbox() {
   if (!el) return;
   // Cargar de Supabase si está disponible
   _supaGetConsultas().then(supaList => {
-    // Merge: Supabase tiene prioridad, localStorage como fallback
+    // Supabase es la fuente principal; memoria de sesión como fallback temporal.
     const localList = getInboxConsultas();
     const merged = supaList.length > 0 ? supaList : localList;
-    // Sincronizar localStorage con datos de Supabase
     if (supaList.length > 0) {
-      try { _storage.setItem(INBOX_KEY, JSON.stringify(merged)); } catch {}
+      saveInboxCache(merged);
+      try { _storage.removeItem(INBOX_KEY); } catch {}
       updateInboxBadge();
     }
     const list = merged;
@@ -6152,17 +6167,17 @@ function cambiarEstadoInbox(id, nuevoEstado) {
     item.estadoInterno = estadoSeguro; item.estado = item.estadoInterno;
     item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString();
     if (item.estadoInterno === 'respuesta_emitida' && !item.fechaRespuesta) item.fechaRespuesta = new Date().toISOString();
-    try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {}
+    saveInboxCache(list);
     _supaUpdateConsulta(id, { estadoInterno: item.estadoInterno, leida: true });
     syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); toast(`Estado actualizado: ${getConnectEstadoLabel(item.estadoInterno)}`, 'ok');
   }
 }
 function asignarCaso(id, abogado) {
-  if (!can('write')) { toast('Sin permiso', 'err'); return; } const nombre = (abogado || '').trim(); if (!nombre) { toast('Selecciona un abogado', 'err'); return; } const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.abogadoAsignado = nombre; item.fechaAsignacion = getTodayDO(); item.estadoInterno = 'asignado'; item.estado = 'asignado'; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {} _supaUpdateConsulta(id, { estadoInterno: 'asignado', abogadoAsignado: nombre, leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); toast(`Caso asignado a ${nombre}`, 'ok'); }
+  if (!can('write')) { toast('Sin permiso', 'err'); return; } const nombre = (abogado || '').trim(); if (!nombre) { toast('Selecciona un abogado', 'err'); return; } const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.abogadoAsignado = nombre; item.fechaAsignacion = getTodayDO(); item.estadoInterno = 'asignado'; item.estado = 'asignado'; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); saveInboxCache(list); _supaUpdateConsulta(id, { estadoInterno: 'asignado', abogadoAsignado: nombre, leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); toast(`Caso asignado a ${nombre}`, 'ok'); }
 function asignarmeCaso(id) { asignarCaso(id, getCurrentLawyerName()); }
 function reasignarCaso(id) { const sel = document.getElementById('reassign-' + id) || document.getElementById('page-reassign-' + id); asignarCaso(id, sel?.value || ''); }
 function marcarConsultaLeida(id) {
-  if (!can('write')) { toast('Sin permiso', 'err'); return; } const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {} _supaUpdateConsulta(id, { leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); }
+  if (!can('write')) { toast('Sin permiso', 'err'); return; } const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); saveInboxCache(list); _supaUpdateConsulta(id, { leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); }
 function buildTimeline(c) { c = normalizeConsulta(c); const estado = normalizeConnectEstado(c.estadoInterno || c.estado); const idx = CONNECT_ESTADOS.findIndex(e => e.key === estado); return CONNECT_ESTADOS.map((step, i) => { const done = i <= idx; const current = i === idx; let title = step.label; let sub = ''; if (step.key === 'asignado') { title = c.abogadoAsignado && c.abogadoAsignado !== 'Sin asignar' ? `Asignado a ${escapeHtml(c.abogadoAsignado)}` : 'Asignado'; sub = c.fechaAsignacion ? `Fecha de asignación: ${escapeHtml(c.fechaAsignacion)}` : 'Pendiente de asignación'; } return `<div class="legal-step ${done ? 'done' : ''} ${current ? 'current' : ''}"><div class="legal-dot">${done ? '&#10003;' : '&#9633;'}</div><div><div class="legal-step-title">${title}</div>${sub ? `<div class="legal-step-sub">${sub}</div>` : ''}</div></div>`; }).join(''); }
 function buscarConsultaPorCodigo() {
   const code = document.getElementById('track-code')?.value.trim().toUpperCase();
@@ -6192,7 +6207,7 @@ function eliminarDeInbox(id) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (!confirm('¿Eliminar este caso de la bandeja?')) return;
   let list = getInboxConsultas().filter(c => c.id !== id);
-  try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {}
+  saveInboxCache(list);
   _supaDeleteConsulta(id);
   updateStoredConsultaById(id, { estado:'cerrado', estadoInterno:'cerrado' });
   updateInboxBadge();
@@ -6275,7 +6290,7 @@ function switchConnectTab(tab) {
    submitConsulta — versión final unificada
    (reemplaza cualquier versión anterior)
 ══════════════════════════════════════════ */
-function submitConsulta() {
+async function submitConsulta() {
   if (!_connectCaseType) {
     toast('Selecciona el tipo de caso', 'err');
     document.getElementById('case-type-grid').scrollIntoView({ behavior:'smooth', block:'center' });
@@ -6318,10 +6333,17 @@ function submitConsulta() {
   const btn = document.getElementById('btn-connect-submit');
   btn.disabled    = true;
   btn.textContent = 'Enviando…';
-  setTimeout(() => {
-    saveConsulta(consulta);
-    saveToInbox(consulta);
-    updateConnectStats();
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const persisted = await saveToInbox(consulta);
+  if (!persisted) {
+    btn.disabled = false;
+    btn.textContent = 'Enviar consulta →';
+    toast('No se pudo enviar la consulta. Intenta nuevamente.', 'err');
+    return;
+  }
+
+  saveConsulta(consulta);
+  updateConnectStats();
     // Intentar notificación por email (si está configurado)
     enviarNotificacionNuevaConsulta(consulta);
     document.getElementById('suc-area').textContent = consulta.tipo;
@@ -6334,7 +6356,6 @@ function submitConsulta() {
     CONNECT_FEED_ITEMS.unshift({ area:consulta.tipo, prov:consulta.provincia, time:'Justo ahora' });
     if (CONNECT_FEED_ITEMS.length > 5) CONNECT_FEED_ITEMS.pop();
     renderConnectFeed();
-  }, 1400);
 }
 
 /* ── Init Connect: llamada directa sin wrapper recursivo ── */
@@ -6400,7 +6421,7 @@ function enviarMensajeConv() {
   if (!c) return;
   if (!c.conversacion) c.conversacion = [];
   c.conversacion.push({ rol:'abogado', texto, fecha:new Date().toISOString(), usuario:SESSION?.nombre||'Abogado' });
-  try { _storage.setItem(INBOX_KEY, JSON.stringify(inbox)); } catch {}
+  saveInboxCache(inbox);
   _supaUpdateConsulta(_convConsultaId, {});
   if (input) input.value = '';
   renderConvThread(c);
@@ -6418,7 +6439,7 @@ function guardarEstadoConv() {
 function limpiarInbox() {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (!confirm('¿Eliminar TODAS las consultas de la bandeja? Esta acción no se puede deshacer.')) return;
-  try { _storage.setItem(INBOX_KEY, '[]'); } catch {}
+  saveInboxCache([]);
   updateInboxBadge();
   renderInboxPage();
   toast('Bandeja limpiada', 'ok');
@@ -7359,7 +7380,7 @@ function convertirConsultaEnCaso(consultaId) {
   // Marcar consulta como convertida
   const inboxList = getInboxConsultas();
   const item = inboxList.find(x => x.id === consultaId);
-  if (item) { item.convertidaEnCaso = true; item.casoId = nuevoCaso.id; try { _storage.setItem(INBOX_KEY, JSON.stringify(inboxList)); } catch {} }
+  if (item) { item.convertidaEnCaso = true; item.casoId = nuevoCaso.id; saveInboxCache(inboxList); }
 
   toast(`✅ Cliente ${nuevoCliente.id} y Expediente ${nuevoCaso.id} creados desde Connect`, 'ok');
   renderGestionClientes(); renderGestionCasos();
