@@ -5954,20 +5954,134 @@ async function _supaInsertConsulta(c) {
       if (error) throw error;
       return true;
     }
+
     const row = _consultaToRow(c);
+    const pendingFile = c?._pendingFile || null;
     const { data, error } = await _supa.functions.invoke('leax-connect-submit', {
       body: {
-        id: row.id, tipo: row.tipo, descripcion: row.descripcion, provincia: row.provincia,
-        nombre: row.nombre, telefono: row.telefono, whatsapp: row.whatsapp,
-        email: row.email, observaciones: row.observaciones,
+        id: row.id,
+        tipo: row.tipo,
+        descripcion: row.descripcion,
+        provincia: row.provincia,
+        nombre: row.nombre,
+        telefono: row.telefono,
+        whatsapp: row.whatsapp,
+        email: row.email,
+        observaciones: row.observaciones,
+        file: pendingFile ? {
+          name: pendingFile.name,
+          type: pendingFile.type,
+          size: pendingFile.size,
+        } : null,
       }
     });
     if (error || data?.error) throw error || new Error(data.error);
-    return data?.ok === true;
+    if (data?.ok !== true) return false;
+
+    if (pendingFile && data?.upload?.path && data?.upload?.token && data?.upload?.finalize_token) {
+      try {
+        const { error: uploadError } = await _supa.storage
+          .from('leax-documentos')
+          .uploadToSignedUrl(data.upload.path, data.upload.token, pendingFile);
+        if (uploadError) throw uploadError;
+
+        const { data: fin, error: finError } = await _supa.functions.invoke('leax-connect-finalize', {
+          body: {
+            consulta_id: row.id,
+            path: data.upload.path,
+            finalize_token: data.upload.finalize_token,
+            name: pendingFile.name,
+            type: pendingFile.type,
+            size: pendingFile.size,
+          }
+        });
+        if (finError || fin?.error || fin?.ok !== true) throw finError || new Error(fin?.error || 'No se pudo finalizar el adjunto.');
+      } catch(fileError) {
+        console.warn('[LEAX | SJT] La consulta fue guardada, pero el adjunto no pudo completarse:', fileError?.message || fileError);
+        c.archivo = null;
+        toast('Consulta registrada, pero el adjunto no pudo cargarse. Puedes reenviarlo al equipo legal.', 'err');
+      }
+    }
+
+    return true;
   } catch(e) {
     console.warn('[LEAX | SJT] Connect submit error:', e?.message || e);
     return false;
   }
+}
+
+/* ── Documentos privados LEAX | SJT ──
+   Base reutilizable para clientes, casos y otros módulos autenticados.
+   El bucket es privado y el acceso queda aislado por empresa mediante RLS. */
+function _safeStorageName(name) {
+  const raw = String(name || 'archivo').normalize('NFKD');
+  const dot = raw.lastIndexOf('.');
+  const ext = dot >= 0 ? raw.slice(dot + 1).toLowerCase().replace(/[^a-z0-9]/g,'').slice(0,8) : '';
+  const base = (dot >= 0 ? raw.slice(0,dot) : raw).replace(/[^a-zA-Z0-9._-]+/g,'-').replace(/-+/g,'-').slice(0,80) || 'archivo';
+  return ext ? base + '.' + ext : base;
+}
+
+async function uploadLegalDocument(file, { modulo='general', clienteId=null, casoId=null, consultaId=null } = {}) {
+  const empresaUuid = getEmpresaUuid();
+  if (!_supa || !SESSION || !empresaUuid || !can('write')) throw new Error('Sin permiso para subir documentos.');
+  if (!validateConnectFile(file)) throw new Error('Archivo no permitido.');
+
+  const path = `${empresaUuid}/${String(modulo||'general').replace(/[^a-z0-9_-]/gi,'-')}/${crypto.randomUUID()}-${_safeStorageName(file.name)}`;
+  const { error:uploadError } = await _supa.storage.from('leax-documentos').upload(path, file, {
+    contentType:file.type || 'application/octet-stream',
+    upsert:false,
+  });
+  if (uploadError) throw uploadError;
+
+  const { data, error:metaError } = await _supa.from('documentos').insert({
+    empresa_id:empresaUuid,
+    modulo,
+    cliente_id:clienteId,
+    caso_id:casoId,
+    consulta_id:consultaId,
+    nombre_original:file.name,
+    storage_path:path,
+    mime_type:file.type || 'application/octet-stream',
+    tamano:file.size,
+    subido_por:SESSION.id || null,
+  }).select('id,empresa_id,modulo,cliente_id,caso_id,consulta_id,nombre_original,storage_path,mime_type,tamano,created_at').single();
+
+  if (metaError) {
+    await _supa.storage.from('leax-documentos').remove([path]);
+    throw metaError;
+  }
+  return data;
+}
+
+async function listLegalDocuments({ modulo=null, clienteId=null, casoId=null, consultaId=null } = {}) {
+  if (!_supa || !SESSION || !getEmpresaUuid()) return [];
+  let q = _supa.from('documentos')
+    .select('id,empresa_id,modulo,cliente_id,caso_id,consulta_id,nombre_original,storage_path,mime_type,tamano,created_at')
+    .eq('empresa_id', getEmpresaUuid())
+    .order('created_at',{ascending:false});
+  if (modulo) q=q.eq('modulo',modulo);
+  if (clienteId) q=q.eq('cliente_id',clienteId);
+  if (casoId) q=q.eq('caso_id',casoId);
+  if (consultaId) q=q.eq('consulta_id',consultaId);
+  const {data,error}=await q;
+  if(error) throw error;
+  return data || [];
+}
+
+async function downloadLegalDocument(documento) {
+  if (!_supa || !SESSION || !documento?.storage_path) throw new Error('Documento no disponible.');
+  const {data,error}=await _supa.storage.from('leax-documentos').download(documento.storage_path);
+  if(error) throw error;
+  return data;
+}
+
+async function deleteLegalDocument(documento) {
+  if (!_supa || !SESSION || !can('write') || !documento?.id || !documento?.storage_path) throw new Error('Sin permiso.');
+  const {error:storageError}=await _supa.storage.from('leax-documentos').remove([documento.storage_path]);
+  if(storageError) throw storageError;
+  const {error:metaError}=await _supa.from('documentos').delete().eq('id',documento.id);
+  if(metaError) throw metaError;
+  return true;
 }
 
 /* Leer todas las consultas desde Supabase (autenticado) */
@@ -6658,7 +6772,7 @@ async function submitConsulta() {
   btn.disabled    = true;
   btn.textContent = 'Enviando…';
   await new Promise(resolve => setTimeout(resolve, 500));
-  const persisted = await saveToInbox(consulta);
+  const persisted = await saveToInbox({ ...consulta, _pendingFile:_connectFile });
   if (!persisted) {
     btn.disabled = false;
     btn.textContent = 'Enviar consulta →';
