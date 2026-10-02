@@ -4437,15 +4437,13 @@ function iniciarSesion(user) {
   updateConfigPage();
   _syncLegalKnowledge();
 
-  if (isSuperAdmin()) {
-    goPage('superadmin');
-    toast('⚡ Bienvenido, System Owner. Acceso total activo.', 'ok');
-  } else {
-    renderMapa(); buildCal(); renderStats(); initJuris();
-    goPage('inicio');
-    toast(`Bienvenido, ${user.nombre.split(' ')[0]} 👋`, 'ok');
-  }
+  renderMapa(); buildCal(); renderStats(); initJuris();
+  goPage('inicio');
+  if (isSuperAdmin()) toast('⚡ Bienvenido. Centro de Operaciones activo.', 'ok');
+  else toast(`Bienvenido, ${user.nombre.split(' ')[0]} 👋`, 'ok');
 
+  ensureNotificationCenter();
+  initInternalNotifications();
   checkOnboarding(user);
 }
 
@@ -4453,6 +4451,7 @@ async function doLogout() {
   const activeClient = _supa;
   SESSION = null;
   window._saViewEmpresa = null;
+  stopInternalNotifications();
   clearAllIntervals();
   document.getElementById('main-app').classList.remove('visible');
   document.getElementById('auth-screen').style.display = 'flex';
@@ -5977,6 +5976,7 @@ async function _supaInsertConsulta(c) {
     });
     if (error || data?.error) throw error || new Error(data.error);
     if (data?.ok !== true) return false;
+    if (data?.tracking_token) c._trackingToken = data.tracking_token;
 
     if (pendingFile && data?.upload?.path && data?.upload?.token && data?.upload?.finalize_token) {
       try {
@@ -6286,8 +6286,9 @@ function getStoredConsultas() {
 }
 
 function saveConsulta(c) {
-  const list = getStoredConsultas();
-  list.unshift(c);
+  const list = getStoredConsultas().filter(x => x.id !== c.id);
+  list.unshift(_publicHistoryRecord(c));
+  if (list.length > 50) list.splice(50);
   try { _storage.setItem(CONNECT_STORAGE_KEY, JSON.stringify(list)); } catch {}
 }
 
@@ -6462,6 +6463,156 @@ function resetConnectForm() {
 }
 
 /* ── Renderizar lista de consultas enviadas ── */
+const CONNECT_DEVICE_HISTORY_VERSION = 2;
+
+function _publicHistoryRecord(c) {
+  return {
+    _v: CONNECT_DEVICE_HISTORY_VERSION,
+    id: c.id,
+    fecha: c.fecha,
+    tipo: c.tipo,
+    provincia: c.provincia,
+    nombre: c.nombre,
+    anonima: c.anonima === true,
+    descripcion: c.descripcion || '',
+    archivo: c.archivo || null,
+    estado: c.estado || 'consulta_recibida',
+    estadoInterno: c.estadoInterno || c.estado || 'consulta_recibida',
+    abogadoAsignado: c.abogadoAsignado || 'Sin asignar',
+    fechaAsignacion: c.fechaAsignacion || '',
+    fechaRecepcion: c.fechaRecepcion || new Date().toISOString(),
+    _trackingToken: c._trackingToken || null,
+  };
+}
+
+async function refreshPublicHistory() {
+  if (!_supa || SESSION) return;
+  const list = getStoredConsultas();
+  let changed = false;
+  for (const item of list) {
+    if (!item?._trackingToken || !item?.id) continue;
+    try {
+      const { data, error } = await _supa.functions.invoke('leax-connect-portal', {
+        body:{ action:'status', consulta_id:item.id, token:item._trackingToken }
+      });
+      if (error || data?.error || !data?.consulta) continue;
+      const remote = data.consulta;
+      item.estado = remote.estado || item.estado;
+      item.estadoInterno = remote.estado || item.estadoInterno;
+      item.abogadoAsignado = remote.abogado_asignado || item.abogadoAsignado;
+      item.fechaRecepcion = remote.fecha_creacion || item.fechaRecepcion;
+      item._serverMessages = Array.isArray(data.mensajes) ? data.mensajes : [];
+      changed = true;
+    } catch {}
+  }
+  if (changed) {
+    try { _storage.setItem(CONNECT_STORAGE_KEY, JSON.stringify(list.map(_publicHistoryRecord))); } catch {}
+  }
+}
+
+function ensurePublicTrackingModal() {
+  if (document.getElementById('public-track-modal')) return;
+  const wrap = document.createElement('div');
+  wrap.className = 'overlay';
+  wrap.id = 'public-track-modal';
+  wrap.innerHTML = `
+    <div class="modal conv-modal" style="max-width:640px">
+      <div class="modal-header">
+        <div><h3 id="pt-title">Seguimiento de consulta</h3><div id="pt-ref" style="font-size:10px;color:var(--fg3);margin-top:3px"></div></div>
+        <button class="close-btn" onclick="closeModal('public-track-modal')">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="pt-status" style="margin-bottom:12px"></div>
+        <div class="conv-thread" id="pt-thread"><div class="conv-empty">No hay mensajes todavía.</div></div>
+        <div class="conv-input-wrap">
+          <textarea class="conv-textarea" id="pt-input" placeholder="Escribe un mensaje al equipo legal..." rows="2"></textarea>
+          <button class="btn btn-accent" id="pt-send" onclick="sendPublicMessage()">Enviar</button>
+        </div>
+        <div style="font-size:10.5px;color:var(--fg3);margin-top:7px">Este seguimiento queda identificado automáticamente en este navegador. No necesitas anotar el código para volver a verlo aquí.</div>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+}
+
+let _publicTrackingCurrent = null;
+async function openPublicTracking(id) {
+  if (SESSION) return;
+  const item = getStoredConsultas().find(x => x.id === id);
+  if (!item) return;
+  if (!item._trackingToken) {
+    toast('Esta consulta fue creada antes del seguimiento automático seguro. Conserva su código de referencia.', 'err');
+    return;
+  }
+  ensurePublicTrackingModal();
+  _publicTrackingCurrent = { id:item.id, token:item._trackingToken };
+  document.getElementById('pt-title').textContent = `${item.tipo || 'Consulta'} · ${item.provincia || ''}`;
+  document.getElementById('pt-ref').textContent = `Ref: ${item.id}`;
+  document.getElementById('pt-status').innerHTML = '<span style="color:var(--fg3)">Actualizando seguimiento…</span>';
+  document.getElementById('pt-thread').innerHTML = '<div class="conv-empty">Cargando mensajes…</div>';
+  openModal('public-track-modal');
+  await loadPublicTracking();
+}
+
+async function loadPublicTracking() {
+  if (!_publicTrackingCurrent || !_supa) return;
+  try {
+    const {data,error}=await _supa.functions.invoke('leax-connect-portal',{
+      body:{action:'status',consulta_id:_publicTrackingCurrent.id,token:_publicTrackingCurrent.token}
+    });
+    if(error||data?.error) throw error || new Error(data.error);
+    const q=data.consulta || {};
+    const estado=normalizeConnectEstado(q.estado);
+    document.getElementById('pt-status').innerHTML = `
+      <div class="track-result-card">
+        <div class="track-head">
+          <div><div class="track-title">${escapeHtml(q.tipo||'Consulta')} · ${escapeHtml(q.provincia||'')}</div><div class="track-ref">Actualizado: ${escapeHtml(formatCRMDate(q.fecha_actualizacion||q.fecha_creacion))}</div></div>
+          <div class="track-pill estado-badge-${estado}">${getConnectEstadoLabel(estado)}</div>
+        </div>
+        <div style="font-size:11px;color:var(--fg3);margin-top:8px">Profesional asignado: <strong style="color:var(--fg2)">${escapeHtml(q.abogado_asignado||'Sin asignar')}</strong></div>
+      </div>`;
+    const msgs=Array.isArray(data.mensajes)?data.mensajes:[];
+    const thread=document.getElementById('pt-thread');
+    if(!msgs.length) thread.innerHTML='<div class="conv-empty">No hay mensajes todavía. Cuando el equipo legal responda, aparecerá aquí y recibirás aviso por correo si suministraste uno.</div>';
+    else thread.innerHTML=msgs.map(m=>`
+      <div class="conv-msg ${m.autor_tipo==='cliente'?'cliente':'abogado'}">
+        <div class="conv-who">${m.autor_tipo==='cliente'?'Tú':'Equipo legal'}</div>
+        <div>${escapeHtml(m.mensaje)}</div>
+        <div class="conv-time">${m.created_at?new Date(m.created_at).toLocaleString('es-DO',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):''}</div>
+      </div>`).join('');
+    thread.scrollTop=thread.scrollHeight;
+
+    const list=getStoredConsultas();
+    const item=list.find(x=>x.id===_publicTrackingCurrent.id);
+    if(item){
+      item.estado=q.estado||item.estado;
+      item.estadoInterno=q.estado||item.estadoInterno;
+      item.abogadoAsignado=q.abogado_asignado||item.abogadoAsignado;
+      try{_storage.setItem(CONNECT_STORAGE_KEY,JSON.stringify(list.map(_publicHistoryRecord)))}catch{}
+    }
+  } catch(e) {
+    document.getElementById('pt-status').innerHTML='<div class="track-result-card" style="color:var(--red)">No se pudo actualizar el seguimiento en este momento.</div>';
+  }
+}
+
+async function sendPublicMessage() {
+  if (!_publicTrackingCurrent || !_supa) return;
+  const input=document.getElementById('pt-input');
+  const mensaje=input?.value.trim();
+  if(!mensaje) return;
+  const btn=document.getElementById('pt-send');
+  if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  try{
+    const {data,error}=await _supa.functions.invoke('leax-connect-portal',{
+      body:{action:'message',consulta_id:_publicTrackingCurrent.id,token:_publicTrackingCurrent.token,mensaje}
+    });
+    if(error||data?.error) throw error||new Error(data.error);
+    input.value='';
+    await loadPublicTracking();
+    toast('Mensaje enviado al equipo legal','ok');
+  }catch(e){toast(e?.message||'No se pudo enviar el mensaje','err');}
+  finally{if(btn){btn.disabled=false;btn.textContent='Enviar';}}
+}
+
 function renderConnectList() {
   const list     = getStoredConsultas();
   const el       = document.getElementById('consultations-list');
@@ -6475,7 +6626,7 @@ function renderConnectList() {
     const estadoKey = normalizeConnectEstado(c.estadoInterno || c.estado);
     const statusClass = estadoKey === 'consulta_recibida' ? 'status-nuevo' : ['asignado','en_analisis','respuesta_emitida'].includes(estadoKey) ? 'status-proceso' : 'status-cerrado';
     const contactLine = [c.contactos?.tel ? `?? ${escapeHtml(c.contactos.tel)}` : '', c.contactos?.wa ? `?? ${escapeHtml(c.contactos.wa)}` : '', c.contactos?.email ? `?? ${escapeHtml(c.contactos.email)}` : ''].filter(Boolean).join(' ? ');
-    return `<div class="consultation-card"><div class="cc-left"><div class="cc-badge">${icon}</div></div><div class="cc-body"><div class="cc-title">${escapeHtml(c.tipo)} &middot; ${escapeHtml(c.provincia)}</div><div class="cc-meta"><span>${escapeHtml(c.fecha)}</span><span class="cc-status ${statusClass}">${getConnectEstadoLabel(estadoKey)}</span>${c.anonima ? '<span style="font-size:10px;color:var(--fg3)">Anónima</span>' : ''}</div><div class="cc-desc">${escapeHtml(c.descripcion)}</div><div style="font-size:11px;color:var(--fg3);margin-top:7px">Abogado asignado: <strong style="color:var(--fg2)">${escapeHtml(c.abogadoAsignado || 'Sin asignar')}</strong>${c.fechaAsignacion ? ` &middot; ${escapeHtml(c.fechaAsignacion)}` : ''}</div>${contactLine ? `<div style="font-size:11px;color:var(--fg3);margin-top:7px">${contactLine}</div>` : ''}</div><div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:8px"><div style="font-size:10px;color:var(--fg3);font-weight:700">Ref: ${escapeHtml(c.id)}</div>${c.archivo ? `<div style="font-size:10px;color:var(--brand)">Adjunto ${escapeHtml(c.archivo)}</div>` : ''}<button class="btn btn-danger btn-sm" style="font-size:10px;padding:3px 8px" onclick="deleteConsulta('${c.id}')">Eliminar</button></div></div>`;
+    return `<div class="consultation-card"><div class="cc-left"><div class="cc-badge">${icon}</div></div><div class="cc-body"><div class="cc-title">${escapeHtml(c.tipo)} &middot; ${escapeHtml(c.provincia)}</div><div class="cc-meta"><span>${escapeHtml(c.fecha)}</span><span class="cc-status ${statusClass}">${getConnectEstadoLabel(estadoKey)}</span>${c.anonima ? '<span style="font-size:10px;color:var(--fg3)">Anónima</span>' : ''}</div><div class="cc-desc">${escapeHtml(c.descripcion)}</div><div style="font-size:11px;color:var(--fg3);margin-top:7px">Abogado asignado: <strong style="color:var(--fg2)">${escapeHtml(c.abogadoAsignado || 'Sin asignar')}</strong>${c.fechaAsignacion ? ` &middot; ${escapeHtml(c.fechaAsignacion)}` : ''}</div>${contactLine ? `<div style="font-size:11px;color:var(--fg3);margin-top:7px">${contactLine}</div>` : ''}</div><div style="flex-shrink:0;display:flex;flex-direction:column;align-items:flex-end;gap:8px"><div style="font-size:10px;color:var(--fg3);font-weight:700">Ref: ${escapeHtml(c.id)}</div>${c.archivo ? `<div style="font-size:10px;color:var(--brand)">Adjunto ${escapeHtml(c.archivo)}</div>` : ''}<button class="btn btn-accent btn-sm" style="font-size:10px;padding:4px 9px" onclick="openPublicTracking('${c.id}')">Ver seguimiento</button><button class="btn btn-danger btn-sm" style="font-size:10px;padding:3px 8px" onclick="deleteConsulta('${c.id}')">Quitar de este dispositivo</button></div></div>`;
   }).join('');
 }
 
@@ -6543,7 +6694,7 @@ async function saveToInbox(consulta) {
     if (_connectActiveTab === 'inbox') renderInbox();
     if (document.getElementById('inbox-page-list')) renderInboxPage();
   }
-  return true;
+  return item._trackingToken || true;
 }
 
 function updateInboxBadge() {
@@ -6720,7 +6871,7 @@ function switchConnectTab(tab) {
   document.getElementById('connect-list-view').style.display  = tab === 'list'  ? '' : 'none';
   document.getElementById('connect-inbox-view').style.display = tab === 'inbox' ? '' : 'none';
   applyConnectVisibility();
-  if (tab === 'list')  renderConnectList();
+  if (tab === 'list')  { renderConnectList(); refreshPublicHistory().then(renderConnectList); }
   if (tab === 'inbox') renderInbox();
 }
 
@@ -6780,10 +6931,10 @@ async function submitConsulta() {
     return;
   }
 
+  if (typeof persisted === 'string') consulta._trackingToken = persisted;
   saveConsulta(consulta);
   updateConnectStats();
-    // Intentar notificación por email (si está configurado)
-    enviarNotificacionNuevaConsulta(consulta);
+    // La notificación interna y el correo se gestionan del lado servidor.
     document.getElementById('suc-area').textContent = consulta.tipo;
     document.getElementById('suc-ref').textContent  = consulta.id;
     document.getElementById('connect-form-wrap').style.display = 'none';
@@ -6816,7 +6967,7 @@ function renderInboxPage() {
 
 /* ── Modal conversación abogado ↔ cliente ── */
 let _convConsultaId = null;
-function abrirConversacion(id) {
+async function abrirConversacion(id) {
   _convConsultaId = id;
   const inbox = getInboxConsultas();
   const c = inbox.find(x => x.id === id);
@@ -6830,6 +6981,15 @@ function abrirConversacion(id) {
   if (badge) badge.innerHTML = `<span class="badge estado-badge-${normalizeConnectEstado(c.estadoInterno)}">${getConnectEstadoLabel(c.estadoInterno)}</span>`;
   renderConvThread(c);
   openModal('modal-conversacion');
+  try {
+    const {data,error}=await _supa.from('consulta_mensajes')
+      .select('id,autor_tipo,autor_nombre,mensaje,created_at')
+      .eq('consulta_id',id).order('created_at',{ascending:true});
+    if(!error){
+      c.conversacion=(data||[]).map(m=>({rol:m.autor_tipo==='cliente'?'cliente':'abogado',texto:m.mensaje,fecha:m.created_at,usuario:m.autor_nombre}));
+      renderConvThread(c);
+    }
+  } catch {}
   setTimeout(() => document.getElementById('conv-input')?.focus(), 100);
 }
 
@@ -6849,7 +7009,7 @@ function renderConvThread(c) {
   thread.scrollTop = thread.scrollHeight;
 }
 
-function enviarMensajeConv() {
+async function enviarMensajeConv() {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const input = document.getElementById('conv-input');
   const texto = input?.value.trim();
@@ -6857,13 +7017,21 @@ function enviarMensajeConv() {
   const inbox = getInboxConsultas();
   const c = inbox.find(x => x.id === _convConsultaId);
   if (!c) return;
-  if (!c.conversacion) c.conversacion = [];
-  c.conversacion.push({ rol:'abogado', texto, fecha:new Date().toISOString(), usuario:SESSION?.nombre||'Abogado' });
-  saveInboxCache(inbox);
-  _supaUpdateConsulta(_convConsultaId, {});
-  if (input) input.value = '';
-  renderConvThread(c);
-  toast('Mensaje enviado', 'ok');
+  const btn = document.querySelector('#modal-conversacion .conv-input-wrap .btn');
+  if(btn){btn.disabled=true;btn.textContent='Enviando…';}
+  try {
+    const {data,error}=await _supa.functions.invoke('leax-consulta-message',{
+      body:{consulta_id:_convConsultaId,mensaje:texto}
+    });
+    if(error||data?.error) throw error||new Error(data.error);
+    if(input) input.value='';
+    await abrirConversacion(_convConsultaId);
+    toast('Mensaje enviado. El cliente será avisado por correo cuando el servicio de correo esté configurado.', 'ok');
+  } catch(e) {
+    toast(e?.message||'No se pudo enviar el mensaje','err');
+  } finally {
+    if(btn){btn.disabled=false;btn.textContent='Enviar';}
+  }
 }
 
 function guardarEstadoConv() {
@@ -6881,6 +7049,107 @@ function limpiarInbox() {
   updateInboxBadge();
   renderInboxPage();
   toast('Bandeja limpiada', 'ok');
+}
+
+/* ══════════════════════════════════════════
+   CENTRO DE NOTIFICACIONES INTERNO — tiempo real
+══════════════════════════════════════════ */
+let _leaxNotifChannel = null;
+let _leaxNotifications = [];
+
+function ensureNotificationCenter() {
+  if (document.getElementById('leax-notif-wrap')) return;
+  const userPill=document.getElementById('user-pill');
+  if(!userPill) return;
+
+  const style=document.createElement('style');
+  style.id='leax-notif-style';
+  style.textContent=`
+    #leax-notif-wrap{position:relative;margin-left:auto;margin-right:10px}
+    #leax-notif-btn{width:38px;height:38px;border:1px solid var(--border-hi);background:var(--card);border-radius:10px;color:var(--fg);cursor:pointer;position:relative;font-size:17px}
+    #leax-notif-count{position:absolute;right:-5px;top:-6px;min-width:18px;height:18px;padding:0 4px;border-radius:10px;background:var(--red);color:#fff;font-size:9px;font-weight:800;display:none;align-items:center;justify-content:center}
+    #leax-notif-panel{position:absolute;right:0;top:46px;width:340px;max-height:430px;overflow:auto;background:var(--surface);border:1px solid var(--border-hi);border-radius:var(--radius-lg);box-shadow:0 18px 50px rgba(0,0,0,.45);z-index:10020;display:none}
+    .leax-notif-head{padding:12px 14px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700}
+    .leax-notif-item{padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer}
+    .leax-notif-item.unread{background:rgba(79,124,255,.08)}
+    .leax-notif-title{font-size:12px;font-weight:700;color:var(--fg);margin-bottom:3px}
+    .leax-notif-msg{font-size:11px;color:var(--fg2);line-height:1.45}
+    .leax-notif-time{font-size:9.5px;color:var(--fg3);margin-top:5px}
+  `;
+  document.head.appendChild(style);
+
+  const wrap=document.createElement('div');
+  wrap.id='leax-notif-wrap';
+  wrap.innerHTML=`<button id="leax-notif-btn" type="button" title="Notificaciones" onclick="toggleNotificationPanel()">🔔<span id="leax-notif-count">0</span></button><div id="leax-notif-panel"><div class="leax-notif-head"><span>Notificaciones</span><button class="btn btn-ghost btn-sm" onclick="markAllNotificationsRead()">Marcar leídas</button></div><div id="leax-notif-list"></div></div>`;
+  userPill.parentNode.insertBefore(wrap,userPill);
+}
+
+function toggleNotificationPanel() {
+  const p=document.getElementById('leax-notif-panel'); if(!p)return;
+  p.style.display=p.style.display==='block'?'none':'block';
+}
+
+function renderInternalNotifications() {
+  const list=document.getElementById('leax-notif-list'), badge=document.getElementById('leax-notif-count');
+  if(!list||!badge)return;
+  const unread=_leaxNotifications.filter(n=>!n.leida).length;
+  badge.textContent=unread; badge.style.display=unread?'flex':'none';
+  list.innerHTML=_leaxNotifications.length?_leaxNotifications.map(n=>`
+    <div class="leax-notif-item ${n.leida?'':'unread'}" onclick="openInternalNotification('${n.id}')">
+      <div class="leax-notif-title">${escapeHtml(n.titulo)}</div>
+      <div class="leax-notif-msg">${escapeHtml(n.mensaje||'')}</div>
+      <div class="leax-notif-time">${n.created_at?new Date(n.created_at).toLocaleString('es-DO',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):''}</div>
+    </div>`).join(''):'<div style="padding:22px;text-align:center;color:var(--fg3);font-size:12px">No hay notificaciones.</div>';
+}
+
+async function loadInternalNotifications() {
+  if(!_supa||!SESSION)return;
+  const {data,error}=await _supa.from('notificaciones')
+    .select('id,tipo,titulo,mensaje,referencia,url_interna,leida,created_at')
+    .order('created_at',{ascending:false}).limit(50);
+  if(!error){_leaxNotifications=data||[];renderInternalNotifications();}
+}
+
+async function openInternalNotification(id) {
+  const n=_leaxNotifications.find(x=>x.id===id); if(!n)return;
+  if(!n.leida){
+    await _supa.from('notificaciones').update({leida:true}).eq('id',id);
+    n.leida=true; renderInternalNotifications();
+  }
+  document.getElementById('leax-notif-panel').style.display='none';
+  if(n.url_interna==='inbox'){goPage('inbox');setTimeout(()=>{if(n.referencia)abrirConversacion(n.referencia)},120);}
+}
+
+async function markAllNotificationsRead() {
+  if(!_supa||!SESSION)return;
+  const ids=_leaxNotifications.filter(n=>!n.leida).map(n=>n.id);
+  if(!ids.length)return;
+  await _supa.from('notificaciones').update({leida:true}).in('id',ids);
+  _leaxNotifications.forEach(n=>n.leida=true); renderInternalNotifications();
+}
+
+function initInternalNotifications() {
+  if(!_supa||!SESSION)return;
+  loadInternalNotifications();
+  if(_leaxNotifChannel) _supa.removeChannel(_leaxNotifChannel);
+  _leaxNotifChannel=_supa.channel('leax-notificaciones-'+SESSION.id)
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'notificaciones'},payload=>{
+      const n=payload.new;
+      if(n.empresa_id && n.empresa_id!==getEmpresaUuid() && !isSuperAdmin()) return;
+      if(n.usuario_id && n.usuario_id!==SESSION.id && !isSuperAdmin()) return;
+      _leaxNotifications.unshift(n);
+      renderInternalNotifications();
+      toast(`🔔 ${n.titulo}`,'ok');
+      if(n.tipo==='nueva_consulta'||n.tipo==='mensaje_cliente'){
+        _supaGetConsultas().then(list=>{if(list.length){saveInboxCache(list);updateInboxBadge();}});
+      }
+    }).subscribe();
+}
+
+function stopInternalNotifications() {
+  if(_leaxNotifChannel&&_supa){try{_supa.removeChannel(_leaxNotifChannel)}catch{}}
+  _leaxNotifChannel=null; _leaxNotifications=[];
+  document.getElementById('leax-notif-wrap')?.remove();
 }
 
 /* ══════════════════════════════════════════
@@ -6959,6 +7228,7 @@ if (_nexlexOriginalDoLoginForConnect && !_nexlexOriginalDoLoginForConnect._conne
       const b = document.getElementById('connect-public-login');
       if (b) b.style.display = 'none';
       applyConnectVisibility();
+      if (SESSION) goPage('inicio');
       // Re-renderizar bandeja con las consultas que llegaron en modo público
       updateInboxBadge();
       if (document.getElementById('inbox-list')) renderInbox();
