@@ -4473,6 +4473,7 @@ async function _syncJurisSupabase() {
 
 async function _syncLegalKnowledge() {
   await Promise.allSettled([_syncAudienciasSupabase(), _syncJurisSupabase()]);
+  await _syncDistributedContent();
   buildCal();
   if (document.getElementById('page-juris')?.classList.contains('active')) initJuris();
 }
@@ -5941,6 +5942,7 @@ function saChangeEmpresa(realEmpresaId) {
   _syncDistributedContent();
 
   renderSAQuickActions(localKey);
+  renderSAContentItems();
   toast(`Viendo empresa: ${empresa.nombre}`, 'ok');
 }
 
@@ -8452,7 +8454,7 @@ function selectTipoAct(btn, casoId) {
   _tipoActSeleccionado[casoId] = btn.dataset.tipo;
 }
 
-function guardarActuacion(casoId) {
+async function guardarActuacion(casoId) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const tipo = _tipoActSeleccionado[casoId];
   if (!tipo) { toast('Selecciona el tipo de actuación', 'err'); return; }
@@ -8477,11 +8479,13 @@ function guardarActuacion(casoId) {
   cs.ultimaActualizacion = new Date().toISOString();
   if (tipo === 'fallo_emitido' && cs.estado === 'activo') cs.estado = 'cerrado';
   saveGestionCasos(casos);
-  _supaUpsertCaso(cs);
+  await _supaUpsertCaso(cs);
   if (visible && cs.origenConnectId) {
-    _supa.functions.invoke('leax-case-progress', {
-      body:{ caso_id:casoId, tipo, descripcion:actuacion.descripcion }
-    }).catch(()=>{});
+    try {
+      await _supa.functions.invoke('leax-case-progress', {
+        body:{ caso_id:casoId, tipo, descripcion:actuacion.descripcion }
+      });
+    } catch {}
   }
 
   // Re-render cronología sin cerrar modal
