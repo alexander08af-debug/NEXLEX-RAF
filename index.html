@@ -3991,6 +3991,305 @@ function getNotas()        { return DB_NOTAS[getEmpresaId()]  || {}; }
 function getVinculos()     { return DB_VINCULOS[getEmpresaId()] || []; }
 function getEmpresa()      { return DB_EMPRESAS[getEmpresaId()]; }
 
+function _dateLabelFromISO(iso) {
+  try { return new Date(iso).toLocaleDateString('es-DO', { day:'2-digit', month:'short', year:'numeric' }); }
+  catch { return ''; }
+}
+
+function _audRowToLocal(row) {
+  return {
+    _dbId: row.id,
+    cliente: row.cliente || 'Sin nombre',
+    hora: row.hora || '--:--',
+    tipo: row.tipo || 'General',
+    estado: row.estado || 'Pendiente',
+    nota: row.nota || '',
+    usuarioId: row.usuario_id || null,
+  };
+}
+
+async function _supaInsertAudiencia(fecha, a) {
+  const empresaUuid = getEmpresaUuid();
+  if (!_supa || !empresaUuid || !SESSION || !can('write')) return null;
+  try {
+    const { data, error } = await _supa.from('audiencias').insert({
+      empresa_id: empresaUuid,
+      fecha,
+      cliente: a.cliente || 'Sin nombre',
+      hora: a.hora || '--:--',
+      tipo: a.tipo || 'General',
+      estado: a.estado || 'Pendiente',
+      nota: a.nota || '',
+      usuario_id: SESSION.id || null,
+      metadata: {},
+      updated_at: new Date().toISOString(),
+    }).select('id').single();
+    if (error) throw error;
+    return data?.id || null;
+  } catch(e) {
+    console.warn('[LEAX | SJT] Audiencia no sincronizada:', e?.message || e);
+    return null;
+  }
+}
+
+async function _supaDeleteAudiencia(dbId) {
+  if (!_supa || !dbId || !SESSION || !can('write')) return false;
+  try {
+    const { error } = await _supa.from('audiencias').delete().eq('id', dbId);
+    if (error) throw error;
+    return true;
+  } catch(e) {
+    console.warn('[LEAX | SJT] No se pudo eliminar audiencia remota:', e?.message || e);
+    return false;
+  }
+}
+
+async function _syncAudienciasSupabase() {
+  const empresaUuid = getEmpresaUuid();
+  const eid = getEmpresaId();
+  if (!_supa || !empresaUuid || !SESSION || !eid) return;
+
+  if (!DB_AUDIENCIAS[eid]) DB_AUDIENCIAS[eid] = {};
+  try {
+    let { data, error } = await _supa.from('audiencias')
+      .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,created_at,updated_at')
+      .eq('empresa_id', empresaUuid)
+      .order('fecha', { ascending:true })
+      .order('hora', { ascending:true });
+    if (error) throw error;
+
+    if (!(data || []).length && can('write')) {
+      const local = DB_AUDIENCIAS[eid] || {};
+      for (const [fecha, arr] of Object.entries(local)) {
+        for (const a of (arr || [])) {
+          if (a?._dbId) continue;
+          const id = await _supaInsertAudiencia(fecha, a);
+          if (id) a._dbId = id;
+        }
+      }
+      const reload = await _supa.from('audiencias')
+        .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,created_at,updated_at')
+        .eq('empresa_id', empresaUuid)
+        .order('fecha', { ascending:true })
+        .order('hora', { ascending:true });
+      if (reload.error) throw reload.error;
+      data = reload.data || [];
+    }
+
+    const grouped = {};
+    for (const row of (data || [])) {
+      if (!grouped[row.fecha]) grouped[row.fecha] = [];
+      grouped[row.fecha].push(_audRowToLocal(row));
+    }
+    DB_AUDIENCIAS[eid] = grouped;
+  } catch(e) {
+    console.warn('[LEAX | SJT] Sincronización de audiencias no disponible; se conserva el estado local:', e?.message || e);
+  }
+}
+
+function _jurisToRow(j) {
+  return {
+    empresa_id: getEmpresaUuid(),
+    legacy_id: Number(j.id),
+    titulo: j.t || '',
+    fecha: j.f || null,
+    fuente: j.fu || '',
+    area: j.area || 'General',
+    palabras_clave: Array.isArray(j.kw) ? j.kw : [],
+    resumen: j.d || '',
+    texto: j.texto || '',
+    favorito: j.fav === true,
+    nuevo: j.nuevo === true,
+    importante: j.importante === true,
+    analisis: j.analisis || null,
+    origen: 'leax',
+    metadata: {},
+    creado_por: SESSION?.id || null,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function _jurisRowToLocal(row) {
+  return {
+    _dbId: row.id,
+    id: Number(row.legacy_id),
+    t: row.titulo || '',
+    f: row.fecha || '',
+    fu: row.fuente || '',
+    area: row.area || 'General',
+    kw: Array.isArray(row.palabras_clave) ? row.palabras_clave : [],
+    d: row.resumen || '',
+    texto: row.texto || '',
+    fav: row.favorito === true,
+    nuevo: row.nuevo === true,
+    importante: row.importante === true,
+    analisis: row.analisis || null,
+    empresaId: getEmpresaId(),
+  };
+}
+
+async function _supaUpsertJuris(j) {
+  const empresaUuid = getEmpresaUuid();
+  if (!_supa || !empresaUuid || !SESSION || !can('write') || !j) return false;
+  try {
+    const { error } = await _supa.from('jurisprudencia')
+      .upsert(_jurisToRow(j), { onConflict:'empresa_id,legacy_id' });
+    if (error) throw error;
+    return true;
+  } catch(e) {
+    console.warn('[LEAX | SJT] Jurisprudencia no sincronizada:', e?.message || e);
+    return false;
+  }
+}
+
+async function _persistNotasSnapshot() {
+  const empresaUuid = getEmpresaUuid();
+  if (!_supa || !empresaUuid || !SESSION || !can('write')) return false;
+  try {
+    const { error:delError } = await _supa.from('juris_notas').delete().eq('empresa_id', empresaUuid);
+    if (delError) throw delError;
+    const rows = [];
+    const notasDB = getNotas();
+    Object.entries(notasDB).forEach(([jid, notas]) => {
+      (notas || []).forEach(n => rows.push({
+        empresa_id: empresaUuid,
+        jurisprudencia_legacy_id: Number(jid),
+        texto: n.txt || '',
+        usuario_id: SESSION.id || null,
+        usuario_nombre: n.usuario || SESSION.nombre || '',
+      }));
+    });
+    if (rows.length) {
+      const { error } = await _supa.from('juris_notas').insert(rows);
+      if (error) throw error;
+    }
+    return true;
+  } catch(e) {
+    console.warn('[LEAX | SJT] Notas no sincronizadas:', e?.message || e);
+    return false;
+  }
+}
+
+async function _persistVinculosSnapshot() {
+  const empresaUuid = getEmpresaUuid();
+  if (!_supa || !empresaUuid || !SESSION || !can('write')) return false;
+  try {
+    const { error:delError } = await _supa.from('juris_vinculos').delete().eq('empresa_id', empresaUuid);
+    if (delError) throw delError;
+    const rows = getVinculos().map(v => ({
+      empresa_id: empresaUuid,
+      jurisprudencia_legacy_id: Number(v.jid),
+      procedimiento: v.proc || '',
+      titulo: v.titulo || '',
+      usuario_id: v.usuarioId || SESSION.id || null,
+    }));
+    if (rows.length) {
+      const { error } = await _supa.from('juris_vinculos').insert(rows);
+      if (error) throw error;
+    }
+    return true;
+  } catch(e) {
+    console.warn('[LEAX | SJT] Vínculos no sincronizados:', e?.message || e);
+    return false;
+  }
+}
+
+async function _syncJurisSupabase() {
+  const empresaUuid = getEmpresaUuid();
+  const eid = getEmpresaId();
+  if (!_supa || !empresaUuid || !SESSION || !eid) return;
+
+  if (!DB_JURIS[eid]) DB_JURIS[eid] = [];
+  if (!DB_NOTAS[eid]) DB_NOTAS[eid] = {};
+  if (!DB_VINCULOS[eid]) DB_VINCULOS[eid] = [];
+
+  try {
+    let jurisRes = await _supa.from('jurisprudencia')
+      .select('id,empresa_id,legacy_id,titulo,fecha,fuente,area,palabras_clave,resumen,texto,favorito,nuevo,importante,analisis,created_at,updated_at')
+      .eq('empresa_id', empresaUuid)
+      .order('legacy_id', { ascending:true });
+
+    if (jurisRes.error) throw jurisRes.error;
+
+    if (!(jurisRes.data || []).length && DB_JURIS[eid].length && can('write')) {
+      for (const j of DB_JURIS[eid]) await _supaUpsertJuris(j);
+      jurisRes = await _supa.from('jurisprudencia')
+        .select('id,empresa_id,legacy_id,titulo,fecha,fuente,area,palabras_clave,resumen,texto,favorito,nuevo,importante,analisis,created_at,updated_at')
+        .eq('empresa_id', empresaUuid)
+        .order('legacy_id', { ascending:true });
+      if (jurisRes.error) throw jurisRes.error;
+    }
+
+    if ((jurisRes.data || []).length) {
+      DB_JURIS[eid] = jurisRes.data.map(_jurisRowToLocal);
+      const maxId = DB_JURIS[eid].reduce((m,j)=>Math.max(m,Number(j.id)||0),0);
+      jNextId = Math.max(jNextId, maxId + 1);
+    }
+
+    let notasRes = await _supa.from('juris_notas')
+      .select('id,empresa_id,jurisprudencia_legacy_id,texto,usuario_id,usuario_nombre,created_at')
+      .eq('empresa_id', empresaUuid)
+      .order('created_at', { ascending:true });
+    if (notasRes.error) throw notasRes.error;
+
+    if (!(notasRes.data || []).length && Object.keys(DB_NOTAS[eid] || {}).length && can('write')) {
+      await _persistNotasSnapshot();
+      notasRes = await _supa.from('juris_notas')
+        .select('id,empresa_id,jurisprudencia_legacy_id,texto,usuario_id,usuario_nombre,created_at')
+        .eq('empresa_id', empresaUuid)
+        .order('created_at', { ascending:true });
+      if (notasRes.error) throw notasRes.error;
+    }
+
+    const notas = {};
+    for (const row of (notasRes.data || [])) {
+      const jid = Number(row.jurisprudencia_legacy_id);
+      if (!notas[jid]) notas[jid] = [];
+      notas[jid].push({
+        _dbId: row.id,
+        txt: row.texto || '',
+        fecha: _dateLabelFromISO(row.created_at),
+        usuario: row.usuario_nombre || 'Usuario',
+      });
+    }
+    if ((notasRes.data || []).length) DB_NOTAS[eid] = notas;
+
+    let vinRes = await _supa.from('juris_vinculos')
+      .select('id,empresa_id,jurisprudencia_legacy_id,procedimiento,titulo,usuario_id,created_at')
+      .eq('empresa_id', empresaUuid)
+      .order('created_at', { ascending:true });
+    if (vinRes.error) throw vinRes.error;
+
+    if (!(vinRes.data || []).length && (DB_VINCULOS[eid] || []).length && can('write')) {
+      await _persistVinculosSnapshot();
+      vinRes = await _supa.from('juris_vinculos')
+        .select('id,empresa_id,jurisprudencia_legacy_id,procedimiento,titulo,usuario_id,created_at')
+        .eq('empresa_id', empresaUuid)
+        .order('created_at', { ascending:true });
+      if (vinRes.error) throw vinRes.error;
+    }
+
+    if ((vinRes.data || []).length) {
+      DB_VINCULOS[eid] = vinRes.data.map(row => ({
+        _dbId: row.id,
+        jid: Number(row.jurisprudencia_legacy_id),
+        proc: row.procedimiento || '',
+        titulo: row.titulo || '',
+        fecha: _dateLabelFromISO(row.created_at),
+        usuarioId: row.usuario_id || null,
+      }));
+    }
+  } catch(e) {
+    console.warn('[LEAX | SJT] Sincronización de jurisprudencia no disponible; se conserva el estado local:', e?.message || e);
+  }
+}
+
+async function _syncLegalKnowledge() {
+  await Promise.allSettled([_syncAudienciasSupabase(), _syncJurisSupabase()]);
+  buildCal();
+  if (document.getElementById('page-juris')?.classList.contains('active')) initJuris();
+}
+
 /* ══════════════════════════════════════════
    AUTH
 ══════════════════════════════════════════ */
@@ -4136,6 +4435,7 @@ function iniciarSesion(user) {
   buildNav();
   renderUserPill();
   updateConfigPage();
+  _syncLegalKnowledge();
 
   if (isSuperAdmin()) {
     goPage('superadmin');
@@ -4657,7 +4957,9 @@ function saveAud() {
   const estado = document.getElementById('aud-estado').value;
   const nota   = document.getElementById('aud-nota').value.trim();
   if (!auds[audDate]) auds[audDate] = [];
-  auds[audDate].push({ cliente:cli, hora, tipo, estado, nota, usuarioId:SESSION.id });
+  const nuevaAudiencia = { cliente:cli, hora, tipo, estado, nota, usuarioId:SESSION.id };
+  auds[audDate].push(nuevaAudiencia);
+  _supaInsertAudiencia(audDate, nuevaAudiencia).then(id => { if (id) nuevaAudiencia._dbId = id; });
   // Guardar cliente en historial de autocompletado
   if (cli !== 'Sin nombre') addClienteHist(cli);
   closeModal('modal-add-aud'); buildCal(); toast(`Audiencia guardada para ${audDate}`, 'ok');
@@ -4685,7 +4987,9 @@ function delAud(fecha, idx) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (confirm('¿Eliminar?')) {
     const auds = getAuds();
+    const eliminada = auds[fecha]?.[idx];
     auds[fecha].splice(idx, 1);
+    if (eliminada?._dbId) _supaDeleteAudiencia(eliminada._dbId);
     if (!auds[fecha].length) delete auds[fecha];
     closeModal('modal-ver-aud'); buildCal(); toast('Eliminada', 'ok');
   }
@@ -4698,6 +5002,16 @@ function initJuris() {
   if (!DB_JURIS[getEmpresaId()])     DB_JURIS[getEmpresaId()]     = [];
   if (!DB_NOTAS[getEmpresaId()])     DB_NOTAS[getEmpresaId()]     = {};
   if (!DB_VINCULOS[getEmpresaId()])  DB_VINCULOS[getEmpresaId()]  = [];
+  if (!_syncJurisSupabase._busy) {
+    _syncJurisSupabase._busy = true;
+    _syncJurisSupabase().then(() => {
+      updateJBadges(); populateAISel(); populateVinSel(); populateNotasSel();
+      if (curJTab === 'catalogo') renderJurisCatalogo();
+      else if (curJTab === 'favoritos') renderJurisFav();
+      else if (curJTab === 'vinculos') { renderVinculos(); renderVSug(); }
+      else if (curJTab === 'notas') renderNotas();
+    }).finally(() => { _syncJurisSupabase._busy = false; });
+  }
   updateJBadges(); renderJurisAlertBar(); populateAISel(); populateVinSel(); populateNotasSel();
   if      (curJTab === 'catalogo')  renderJurisCatalogo();
   else if (curJTab === 'favoritos') renderJurisFav();
@@ -4794,6 +5108,7 @@ function toggleFav(id, btn) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const juris = getJuris(); const j = juris.find(x => x.id === id); if (!j) return;
   j.fav = !j.fav; if (btn) btn.classList.toggle('on', j.fav);
+  _supaUpsertJuris(j);
   updateJBadges(); toast(j.fav ? '⭐ Agregada a favoritas' : 'Removida de favoritas', 'ok');
   if (curJTab === 'favoritos') renderJurisFav();
 }
@@ -4802,6 +5117,7 @@ function toggleFavFromModal() {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const juris = getJuris(); const j = juris.find(x => x.id === window._detailId); if (!j) return;
   j.fav = !j.fav;
+  _supaUpsertJuris(j);
   document.getElementById('jd-fav-btn').classList.toggle('on', j.fav);
   updateJBadges(); toast(j.fav ? '⭐ Favorita' : 'Removida de favoritas', 'ok');
   if (curJTab === 'catalogo')  renderJurisCatalogo();
@@ -4854,6 +5170,7 @@ function analizarIA() {
         importancia: `Alta relevancia práctica. Modifica el estándar procesal en ${j.area || 'derecho'}.`,
       };
       if (!j.analisis) j.analisis = a;
+      _supaUpsertJuris(j);
       el.innerHTML = `<div class="ai-result-box">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
           <div><div style="font-size:13px;font-weight:700;color:var(--fg)">${escapeHtml(j.t)}</div><div style="font-size:11px;color:var(--fg3);margin-top:4px">${escapeHtml(j.fu)} · ${escapeHtml(j.f)}</div></div>
@@ -4917,6 +5234,7 @@ function crearVinculo() {
   const j    = juris.find(x => x.id === jid);
   if (vinculos.find(v => v.jid === jid && v.proc === proc)) { toast('Este vínculo ya existe', 'err'); return; }
   vinculos.push({ jid, proc, titulo:j?.t, fecha:new Date().toLocaleDateString('es-DO'), usuarioId:SESSION.id });
+  _persistVinculosSnapshot();
   renderVinculos(); toast('🔗 Vínculo creado', 'ok');
 }
 
@@ -4935,7 +5253,7 @@ function renderVinculos() {
     : '<div style="color:var(--fg3);font-size:13px;padding:18px 0">No hay vínculos creados aún.</div>';
 }
 
-function vinculos_del(i) { if (!can('write')) { toast('Sin permiso', 'err'); return; } getVinculos().splice(i, 1); renderVinculos(); toast('Vínculo eliminado', 'ok'); }
+function vinculos_del(i) { if (!can('write')) { toast('Sin permiso', 'err'); return; } getVinculos().splice(i, 1); _persistVinculosSnapshot(); renderVinculos(); toast('Vínculo eliminado', 'ok'); }
 
 function renderVSug() {
   const juris = getJuris(); const el = document.getElementById('vsug-list'); if (!el) return;
@@ -4963,6 +5281,7 @@ function aplicarSug(jid, proc, btn) {
   const j = juris.find(x => x.id === jid);
   if (vinculos.find(v => v.jid === jid && v.proc === proc)) { toast('Ya existe', 'err'); return; }
   vinculos.push({ jid, proc, titulo:j?.t, fecha:new Date().toLocaleDateString('es-DO'), usuarioId:SESSION.id });
+  _persistVinculosSnapshot();
   btn.textContent = 'Aplicado ✓'; btn.disabled = true;
   renderVinculos(); toast('🔗 Vínculo aplicado', 'ok');
 }
@@ -4980,6 +5299,7 @@ function guardarNota() {
   const notasDB = getNotas();
   if (!notasDB[id]) notasDB[id] = [];
   notasDB[id].push({ txt, fecha:new Date().toLocaleDateString('es-DO', { day:'2-digit', month:'short', year:'numeric' }), usuario:SESSION.nombre.split(' ')[0] });
+  _persistNotasSnapshot();
   document.getElementById('nota-txt').value = '';
   updateJBadges(); renderNotas(); toast('📝 Nota guardada', 'ok');
 }
@@ -5008,7 +5328,7 @@ function renderNotas() {
 function elimNota(id, idx) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const notasDB = getNotas();
-  if (notasDB[id]) { notasDB[id].splice(idx, 1); updateJBadges(); renderNotas(); toast('Nota eliminada', 'ok'); }
+  if (notasDB[id]) { notasDB[id].splice(idx, 1); _persistNotasSnapshot(); updateJBadges(); renderNotas(); toast('Nota eliminada', 'ok'); }
 }
 
 function abrirNotaRapida(id) {
@@ -5040,6 +5360,7 @@ function guardarNotaRapida() {
   const notasDB = getNotas();
   if (!notasDB[id]) notasDB[id] = [];
   notasDB[id].push({ txt, fecha:new Date().toLocaleDateString('es-DO', { day:'2-digit', month:'short', year:'numeric' }), usuario:SESSION.nombre.split(' ')[0] });
+  _persistNotasSnapshot();
   updateJBadges(); toast('📝 Nota guardada', 'ok'); closeModal('modal-nota-rapida');
   if (curJTab === 'catalogo')  renderJurisCatalogo();
   if (curJTab === 'favoritos') renderJurisFav();
@@ -5082,7 +5403,7 @@ function guardarJuris() {
   if (!t) { toast('El título es obligatorio', 'err'); return; }
   const eid = getEmpresaId();
   if (!DB_JURIS[eid]) DB_JURIS[eid] = [];
-  DB_JURIS[eid].unshift({
+  const nuevaJuris = {
     id: jNextId++, t,
     fu:   document.getElementById('rtrib').value,
     f:    document.getElementById('rfecha').value || new Date().toISOString().split('T')[0],
@@ -5091,7 +5412,9 @@ function guardarJuris() {
     d:    document.getElementById('rresumen').value || 'Sin resumen.',
     texto:document.getElementById('rtexto').value,
     fav:false, nuevo:true, importante:false, analisis:null, empresaId:eid,
-  });
+  };
+  DB_JURIS[eid].unshift(nuevaJuris);
+  _supaUpsertJuris(nuevaJuris);
   updateJBadges(); populateAISel(); populateVinSel(); populateNotasSel();
   toast('✓ Sentencia guardada', 'ok'); clearReg(); switchJTab('catalogo');
 }
@@ -5422,6 +5745,7 @@ function saChangeEmpresa(realEmpresaId) {
       renderGestionDashboard(); renderGestionClientes(); renderGestionCasos();
     }
   });
+  _syncLegalKnowledge();
 
   renderSAQuickActions(localKey);
   toast(`Viendo empresa: ${empresa.nombre}`, 'ok');
