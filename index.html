@@ -5222,20 +5222,70 @@ function renderStats() {
 /* ══════════════════════════════════════════
    ADMIN — Gestión de usuarios
 ══════════════════════════════════════════ */
+let _adminDirectory = { companies: [], profiles: [], loaded:false };
+
+async function _adminInvoke(action, payload = {}) {
+  if (!_supa || !SESSION) throw new Error('Sesión no disponible.');
+  const { data, error } = await _supa.functions.invoke('leax-admin', { body:{ action, ...payload } });
+  if (error) throw error;
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+async function _refreshAdminDirectory() {
+  if (!can('manageUsers') && !isSuperAdmin()) return _adminDirectory;
+  const data = await _adminInvoke('list');
+  _adminDirectory = {
+    companies: Array.isArray(data?.companies) ? data.companies : [],
+    profiles: Array.isArray(data?.profiles) ? data.profiles : [],
+    loaded:true,
+  };
+  return _adminDirectory;
+}
+function _adminRoleKey(v) { return String(v || '').trim().toLowerCase().replace(/[\s_-]+/g,''); }
+function _adminInitials(nombre) { return String(nombre||'U').split(/\s+/).filter(Boolean).map(x=>x[0]||'').join('').toUpperCase().slice(0,2) || 'U'; }
+function _currentAdminCompany() {
+  const uuid = getEmpresaUuid();
+  return _adminDirectory.companies.find(e => e.id === uuid) || _adminDirectory.companies[0] || null;
+}
+function getUsersEmpresa() {
+  const uuid = getEmpresaUuid();
+  if (_adminDirectory.loaded) {
+    return _adminDirectory.profiles
+      .filter(p => isSuperAdmin() || p.empresa_id === uuid)
+      .map(p => ({
+        id:p.user_id, nombre:p.nombre||p.email||'Usuario', email:p.email||'',
+        rol:_adminRoleKey(p.rol), empresaId:p.empresa_id, activo:p.activo===true,
+        avatar:_adminInitials(p.nombre||p.email),
+      }));
+  }
+  return DB_USUARIOS.filter(u => isSuperAdmin() || u.empresaId === getEmpresaId());
+}
+
 function renderAdminPage() {
   if (!can('manageUsers')) {
     document.getElementById('page-admin').innerHTML = '<div class="locked-msg"><span class="lock-icon">🔒</span><div>Acceso restringido. Solo los administradores pueden gestionar usuarios.</div></div>';
     return;
   }
-  const empresa  = getEmpresa();
-  const usuarios = getUsersEmpresa();
-  document.getElementById('admin-empresa-title').textContent = `Usuarios de ${empresa.nombre}`;
-  document.getElementById('admin-empresa-name').textContent  = empresa.nombre;
-  document.getElementById('admin-user-count').textContent    = `${usuarios.length} / ${empresa.maxUsers}`;
-  document.getElementById('user-quota-bar').style.width      = `${Math.round(usuarios.length / empresa.maxUsers * 100)}%`;
+  if (!_adminDirectory.loaded) {
+    const list = document.getElementById('users-list');
+    if (list) list.innerHTML = '<div style="padding:20px;color:var(--fg3)">Cargando usuarios…</div>';
+    _refreshAdminDirectory().then(renderAdminPage).catch(e => {
+      if (list) list.innerHTML = '<div class="locked-msg">No se pudo cargar el directorio de usuarios.</div>';
+      console.warn('[LEAX | SJT] Admin directory:', e?.message || e);
+    });
+    return;
+  }
+  const empresa = _currentAdminCompany();
+  const usuarios = getUsersEmpresa().filter(u => u.rol !== 'superadmin');
+  const maxUsers = Number(empresa?.max_users || 10);
+  const empName = empresa?.nombre || SESSION?.empresaNombre || 'Empresa';
+  document.getElementById('admin-empresa-title').textContent = `Usuarios de ${empName}`;
+  document.getElementById('admin-empresa-name').textContent  = empName;
+  document.getElementById('admin-user-count').textContent    = `${usuarios.length} / ${maxUsers}`;
+  document.getElementById('user-quota-bar').style.width      = `${Math.min(100,Math.round(usuarios.length / Math.max(1,maxUsers) * 100))}%`;
   const colors = { admin:'#4f7cff', abogado:'#34d399', paralegal:'#fbbf24' };
   document.getElementById('users-list').innerHTML = usuarios.map(u => {
-    const clr    = colors[u.rol] || '#8892b0';
+    const clr = colors[u.rol] || '#8892b0';
     const esSelf = u.id === SESSION.id;
     return `
       <div class="user-row">
@@ -5250,22 +5300,34 @@ function renderAdminPage() {
           ${!esSelf ? `<button class="btn btn-ghost btn-sm" onclick="cambiarRol('${u.id}')">Rol</button><button class="btn btn-danger btn-sm" onclick="toggleActivo('${u.id}')">${u.activo ? 'Desactivar' : 'Activar'}</button>` : ''}
         </div>
       </div>`;
-  }).join('');
+  }).join('') || '<div style="padding:20px;color:var(--fg3)">No hay usuarios adicionales.</div>';
 }
 
-function cambiarRol(uid) {
+async function cambiarRol(uid) {
   if (!can('manageUsers')) { toast('Sin permiso', 'err'); return; }
-  const u = DB_USUARIOS.find(x => x.id === uid); if (!u) return;
+  const u = getUsersEmpresa().find(x => x.id === uid); if (!u) return;
   const roles = ['admin','abogado','paralegal'];
-  u.rol = roles[(roles.indexOf(u.rol) + 1) % roles.length];
-  renderAdminPage(); toast(`Rol de ${u.nombre.split(' ')[0]} cambiado a ${u.rol}`, 'ok');
+  const next = roles[(roles.indexOf(u.rol) + 1) % roles.length];
+  try {
+    await _adminInvoke('update_user', { user_id:uid, rol:next });
+    await _refreshAdminDirectory();
+    renderAdminPage();
+    if (isSuperAdmin()) renderSuperAdminPage();
+    toast(`Rol de ${u.nombre.split(' ')[0]} cambiado a ${next}`, 'ok');
+  } catch(e) { toast(e?.message || 'No se pudo cambiar el rol', 'err'); }
 }
-function toggleActivo(uid) {
+async function toggleActivo(uid) {
   if (!can('manageUsers')) { toast('Sin permiso', 'err'); return; }
-  const u = DB_USUARIOS.find(x => x.id === uid); if (!u) return;
-  u.activo = !u.activo; renderAdminPage(); toast(`Usuario ${u.activo ? 'activado' : 'desactivado'}`, 'ok');
+  const u = getUsersEmpresa().find(x => x.id === uid); if (!u) return;
+  try {
+    await _adminInvoke('update_user', { user_id:uid, activo:!u.activo });
+    await _refreshAdminDirectory();
+    renderAdminPage();
+    if (isSuperAdmin()) renderSuperAdminPage();
+    toast(`Usuario ${u.activo ? 'desactivado' : 'activado'}`, 'ok');
+  } catch(e) { toast(e?.message || 'No se pudo actualizar el usuario', 'err'); }
 }
-function crearUsuario() {
+async function crearUsuario() {
   if (!can('manageUsers')) { toast('Sin permiso', 'err'); return; }
   const nombre = document.getElementById('nu-name').value.trim();
   const email  = document.getElementById('nu-email').value.trim().toLowerCase();
@@ -5273,15 +5335,20 @@ function crearUsuario() {
   const rol    = document.getElementById('nu-rol').value;
   const err    = document.getElementById('newuser-err');
   if (!nombre || !email || !pass) { err.textContent = 'Completa todos los campos.'; err.classList.add('show'); return; }
-  if (pass.length < 6)            { err.textContent = 'La contraseña debe tener al menos 6 caracteres.'; err.classList.add('show'); return; }
-  if (DB_USUARIOS.find(u => u.email.toLowerCase() === email)) { err.textContent = 'Este correo ya está registrado.'; err.classList.add('show'); return; }
-  const empresa    = getEmpresa(); const usersCount = getUsersEmpresa().length;
-  if (usersCount >= empresa.maxUsers) { err.textContent = `Límite de usuarios alcanzado (${empresa.maxUsers}).`; err.classList.add('show'); return; }
-  const initials = nombre.split(' ').map(x => x[0] || '').join('').toUpperCase().slice(0, 2);
-  DB_USUARIOS.push({ id:'u' + uNextId++, nombre, email, pass, rol, empresaId:getEmpresaId(), activo:true, avatar:initials });
-  err.classList.remove('show');
-  ['nu-name','nu-email','nu-pass'].forEach(id => document.getElementById(id).value = '');
-  closeModal('modal-new-user'); renderAdminPage(); toast(`Usuario ${nombre.split(' ')[0]} creado`, 'ok');
+  if (pass.length < 8) { err.textContent = 'La contraseña debe tener al menos 8 caracteres.'; err.classList.add('show'); return; }
+  try {
+    await _adminInvoke('create_user', { nombre, email, password:pass, rol, empresa_id:getEmpresaUuid() });
+    err.classList.remove('show');
+    ['nu-name','nu-email','nu-pass'].forEach(id => document.getElementById(id).value = '');
+    closeModal('modal-new-user');
+    await _refreshAdminDirectory();
+    renderAdminPage();
+    if (isSuperAdmin()) renderSuperAdminPage();
+    toast(`Usuario ${nombre.split(' ')[0]} creado`, 'ok');
+  } catch(e) {
+    err.textContent = e?.message || 'No se pudo crear el usuario.';
+    err.classList.add('show');
+  }
 }
 
 /* ══════════════════════════════════════════
@@ -5315,62 +5382,53 @@ function renderSuperAdminPage() {
     document.getElementById('page-superadmin').innerHTML = '<div class="locked-msg"><span class="lock-icon">🔒</span><div>Acceso denegado.</div></div>';
     return;
   }
-  const totalEmpresas = Object.keys(DB_EMPRESAS).length;
-  const totalUsuarios = DB_USUARIOS.filter(u => u.rol !== 'superadmin').length;
-  const totalJuris    = Object.values(DB_JURIS).reduce((s, arr) => s + arr.length, 0);
-  const totalAuds     = Object.values(DB_AUDIENCIAS).reduce((s, obj) => s + Object.values(obj).reduce((ss, arr) => ss + arr.length, 0), 0);
+  if (!_adminDirectory.loaded) {
+    _refreshAdminDirectory().then(renderSuperAdminPage).catch(e => {
+      console.warn('[LEAX | SJT] Super Admin directory:', e?.message || e);
+      toast('No se pudo cargar el directorio administrativo', 'err');
+    });
+    return;
+  }
+  const companies = _adminDirectory.companies;
+  const profiles = _adminDirectory.profiles;
+  const totalJuris = Object.values(DB_JURIS).reduce((s, arr) => s + arr.length, 0);
+  const totalAuds = Object.values(DB_AUDIENCIAS).reduce((s, obj) => s + Object.values(obj).reduce((ss, arr) => ss + arr.length, 0), 0);
   const metricas = [
-    { l:'Empresas registradas',    v:totalEmpresas, c:'var(--orange)' },
-    { l:'Usuarios totales',        v:totalUsuarios, c:'var(--brand)'  },
-    { l:'Sentencias en sistema',   v:totalJuris,    c:'var(--green)'  },
-    { l:'Audiencias registradas',  v:totalAuds,     c:'var(--amber)'  },
+    { l:'Empresas registradas', v:companies.length, c:'var(--orange)' },
+    { l:'Usuarios totales', v:profiles.length, c:'var(--brand)' },
+    { l:'Sentencias locales', v:totalJuris, c:'var(--green)' },
+    { l:'Audiencias locales', v:totalAuds, c:'var(--amber)' },
   ];
   document.getElementById('sa-metrics').innerHTML = metricas.map(m => `
-    <div class="stat-card">
-      <div class="top-bar" style="background:${m.c}"></div>
-      <div class="lbl">${m.l}</div>
-      <div class="val" style="color:${m.c}">${m.v}</div>
-    </div>`).join('');
-
-  document.getElementById('sa-empresas-list').innerHTML = Object.values(DB_EMPRESAS).map(e => {
-    const uc = DB_USUARIOS.filter(u => u.empresaId === e.id).length;
-    const jc = (DB_JURIS[e.id] || []).length;
-    return `
-      <div class="sa-empresa-row">
-        <div style="flex:1">
-          <div style="font-size:13px;font-weight:700;color:var(--fg);margin-bottom:3px">${escapeHtml(e.nombre)}</div>
-          <div style="font-size:11px;color:var(--fg3)">${uc} usuarios · ${jc} sentencias</div>
-        </div>
-        <span class="plan-badge plan-${e.plan}">${e.plan}</span>
-        <button class="btn btn-ghost btn-sm" style="margin-left:9px" onclick="saChangeEmpresa('${e.id}');goPage('mapa')">Entrar</button>
-        <button class="btn btn-danger btn-sm" onclick="saEliminarEmpresa('${e.id}')">Eliminar</button>
-      </div>`;
+    <div class="stat-card"><div class="top-bar" style="background:${m.c}"></div><div class="lbl">${m.l}</div><div class="val" style="color:${m.c}">${m.v}</div></div>`).join('');
+  document.getElementById('sa-empresas-list').innerHTML = companies.map(e => {
+    const uc = profiles.filter(u => u.empresa_id === e.id).length;
+    return `<div class="sa-empresa-row">
+      <div style="flex:1"><div style="font-size:13px;font-weight:700;color:var(--fg);margin-bottom:3px">${escapeHtml(e.nombre)}</div>
+      <div style="font-size:11px;color:var(--fg3)">${uc} usuarios · ${e.activo ? 'Activa' : 'Inactiva'}</div></div>
+      <span class="plan-badge plan-${escapeHtml(e.plan||'profesional')}">${escapeHtml(e.plan||'profesional')}</span>
+    </div>`;
+  }).join('') || '<div style="color:var(--fg3);padding:16px">Sin empresas registradas.</div>';
+  const colors = { admin:'#4f7cff', abogado:'#34d399', paralegal:'#fbbf24', superadmin:'#fb923c' };
+  document.getElementById('sa-users-list').innerHTML = profiles.map(u => {
+    const rol = _adminRoleKey(u.rol), clr = colors[rol] || '#8892b0';
+    const empresa = companies.find(e => e.id === u.empresa_id), esSelf = u.user_id === SESSION.id;
+    return `<div class="user-row" style="padding:8px 0">
+      <div class="user-row-avatar" style="background:${clr}28;color:${clr};width:30px;height:30px;font-size:11px">${escapeHtml(_adminInitials(u.nombre||u.email))}</div>
+      <div class="user-row-info" style="flex:1"><div class="user-row-name" style="font-size:12px">${escapeHtml(u.nombre||u.email||'Usuario')}</div>
+      <div class="user-row-sub" style="font-size:10px">${escapeHtml(empresa?.nombre||'Sin empresa')} · ${escapeHtml(u.email||'')}</div></div>
+      <span class="user-role-badge role-${rol}" style="font-size:9px">${rol}</span>
+      <span class="badge" style="font-size:9px;margin-left:6px">${u.activo ? '● Activo' : '○ Inactivo'}</span>
+      ${!esSelf && rol !== 'superadmin' ? `<button class="btn btn-danger btn-sm" style="margin-left:6px" onclick="saEliminarUsuario('${u.user_id}')">Eliminar</button>` : ''}
+    </div>`;
   }).join('');
-
-  const colors = { admin:'#4f7cff', abogado:'#34d399', paralegal:'#fbbf24' };
-  document.getElementById('sa-users-list').innerHTML = DB_USUARIOS.filter(u => u.rol !== 'superadmin').map(u => {
-    const clr    = colors[u.rol] || '#8892b0';
-    const empresa= DB_EMPRESAS[u.empresaId];
-    return `
-      <div class="user-row" style="padding:8px 0">
-        <div class="user-row-avatar" style="background:${clr}28;color:${clr};width:30px;height:30px;font-size:11px">${escapeHtml(u.avatar)}</div>
-        <div class="user-row-info" style="flex:1">
-          <div class="user-row-name" style="font-size:12px">${escapeHtml(u.nombre)}</div>
-          <div class="user-row-sub" style="font-size:10px">${escapeHtml(empresa?.nombre || 'Sin empresa')}</div>
-        </div>
-        <span class="user-role-badge role-${u.rol}" style="font-size:9px">${u.rol}</span>
-        <span class="badge" style="background:${u.activo ? 'rgba(52,211,153,.12)' : 'rgba(248,113,113,.12)'};color:${u.activo ? 'var(--green)' : 'var(--red)'};font-size:9px;margin-left:6px">${u.activo ? '●' : '○'}</span>
-        <button class="btn btn-danger btn-sm" style="padding:2px 8px;font-size:10px;margin-left:6px" onclick="saEliminarUsuario('${u.id}')">✕</button>
-      </div>`;
-  }).join('');
-
   const sel = document.getElementById('sa-empresa-sel');
   if (sel) {
-    sel.innerHTML = Object.values(DB_EMPRESAS).map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('');
-    sel.value     = window._saViewEmpresa || 'e1';
+    sel.innerHTML = companies.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('');
+    if (getEmpresaUuid()) sel.value = getEmpresaUuid();
   }
   const vn = document.getElementById('sa-viewing-name');
-  if (vn) vn.textContent = DB_EMPRESAS[window._saViewEmpresa || 'e1']?.nombre || '';
+  if (vn) vn.textContent = SESSION?.empresaNombre || companies.find(e=>e.id===getEmpresaUuid())?.nombre || '';
   renderSAQuickActions(window._saViewEmpresa || 'e1');
 }
 
@@ -5391,38 +5449,41 @@ function renderSAQuickActions(eid) {
 
 function saEliminarEmpresa(eid) {
   if (!isSuperAdmin()) { toast('Sin permiso', 'err'); return; }
-  const e = DB_EMPRESAS[eid]; if (!e) { toast('Empresa no encontrada', 'err'); return; }
-  const uc = DB_USUARIOS.filter(u => u.empresaId === eid).length;
-  if (!confirm(`¿Eliminar la empresa "${e.nombre}"?\n\nEsto eliminará también ${uc} usuarios y todos sus datos.\n\nEsta acción no se puede deshacer.`)) return;
-  delete DB_EMPRESAS[eid]; delete DB_JURIS[eid]; delete DB_AUDIENCIAS[eid]; delete DB_NOTAS[eid]; delete DB_VINCULOS[eid]; delete DB_PROCS[eid];
-  while (DB_USUARIOS.findIndex(u => u.empresaId === eid) >= 0)
-    DB_USUARIOS.splice(DB_USUARIOS.findIndex(u => u.empresaId === eid), 1);
-  if (window._saViewEmpresa === eid) window._saViewEmpresa = Object.keys(DB_EMPRESAS)[0] || null;
-  renderSuperAdminPage(); renderSABar(); toast(`Empresa "${e.nombre}" eliminada`, 'ok');
+  toast('Por seguridad, las empresas reales no se eliminan desde el navegador.', 'err');
 }
 
-function saEliminarUsuario(uid) {
+async function saEliminarUsuario(uid) {
   if (!isSuperAdmin()) { toast('Sin permiso', 'err'); return; }
-  const u = DB_USUARIOS.find(x => x.id === uid); if (!u) return;
-  if (!confirm(`¿Eliminar al usuario "${u.nombre}" (${u.email})?`)) return;
-  DB_USUARIOS.splice(DB_USUARIOS.indexOf(u), 1);
-  renderSuperAdminPage(); toast(`Usuario ${u.nombre.split(' ')[0]} eliminado`, 'ok');
+  const u = _adminDirectory.profiles.find(x => x.user_id === uid);
+  if (!u || uid === SESSION.id) return;
+  if (!confirm(`¿Eliminar al usuario "${u.nombre || u.email}"? Esta acción revoca su acceso.`)) return;
+  try {
+    await _adminInvoke('delete_user', { user_id:uid });
+    await _refreshAdminDirectory();
+    renderSuperAdminPage();
+    toast('Usuario eliminado', 'ok');
+  } catch(e) { toast(e?.message || 'No se pudo eliminar', 'err'); }
 }
 
-function saCrearEmpresa() {
+async function saCrearEmpresa() {
   if (!isSuperAdmin()) { toast('Sin permiso', 'err'); return; }
   const nombre = document.getElementById('ne-nombre').value.trim();
   const plan   = document.getElementById('ne-plan').value;
   const err    = document.getElementById('newempresa-err');
   if (!nombre) { err.textContent = 'Escribe el nombre de la empresa.'; err.classList.add('show'); return; }
   const planLimits = { basico:5, profesional:10, enterprise:50 };
-  const eid = 'e' + eNextId++;
-  DB_EMPRESAS[eid]  = { id:eid, nombre, plan, maxUsers:planLimits[plan] || 10 };
-  DB_JURIS[eid]     = []; DB_AUDIENCIAS[eid] = {}; DB_NOTAS[eid] = {}; DB_VINCULOS[eid] = []; DB_PROCS[eid] = [];
-  err.classList.remove('show');
-  document.getElementById('ne-nombre').value = '';
-  closeModal('modal-new-empresa'); renderSuperAdminPage(); renderSABar();
-  toast(`Empresa "${nombre}" creada con plan ${plan}`, 'ok');
+  try {
+    await _adminInvoke('create_company', { nombre, plan, max_users:planLimits[plan] || 10 });
+    err.classList.remove('show');
+    document.getElementById('ne-nombre').value = '';
+    closeModal('modal-new-empresa');
+    await _refreshAdminDirectory();
+    renderSuperAdminPage();
+    toast(`Empresa "${nombre}" creada`, 'ok');
+  } catch(e) {
+    err.textContent = e?.message || 'No se pudo crear la empresa.';
+    err.classList.add('show');
+  }
 }
 
 /* ══════════════════════════════════════════
@@ -5511,11 +5572,27 @@ function _rowToConsulta(row) {
 
 /* Insertar consulta en Supabase (público) */
 async function _supaInsertConsulta(c) {
-  if (!_supa) return;
+  if (!_supa) return false;
   try {
-    const { error } = await _supa.from('consultas').upsert(_consultaToRow(c));
-    if (error) console.warn('[LEAX | SJT] Supabase insert error:', error.message);
-  } catch(e) { console.warn('[LEAX | SJT] Supabase insert exception:', e); }
+    if (SESSION) {
+      const { error } = await _supa.from('consultas').upsert(_consultaToRow(c));
+      if (error) throw error;
+      return true;
+    }
+    const row = _consultaToRow(c);
+    const { data, error } = await _supa.functions.invoke('leax-connect-submit', {
+      body: {
+        id: row.id, tipo: row.tipo, descripcion: row.descripcion, provincia: row.provincia,
+        nombre: row.nombre, telefono: row.telefono, whatsapp: row.whatsapp,
+        email: row.email, observaciones: row.observaciones,
+      }
+    });
+    if (error || data?.error) throw error || new Error(data.error);
+    return data?.ok === true;
+  } catch(e) {
+    console.warn('[LEAX | SJT] Connect submit error:', e?.message || e);
+    return false;
+  }
 }
 
 /* Leer todas las consultas desde Supabase (autenticado) */
@@ -5554,9 +5631,11 @@ async function _supaUpdateConsulta(id, fields) {
 
 /* Buscar una consulta por código en Supabase (público) */
 async function _supaFindByCodigo(codigo) {
-  if (!_supa) return null;
+  if (!SESSION) return null;
   try {
-    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,provincia,nombre,estado,abogado_asignado,fecha_creacion').eq('id', codigo.toUpperCase()).maybeSingle();
+    const { data, error } = await _supa.from('consultas')
+      .select('id,codigo,tipo,provincia,nombre,estado,abogado_asignado,fecha_creacion')
+      .eq('id', codigo.toUpperCase()).maybeSingle();
     if (error || !data) return null;
     return _rowToConsulta(data);
   } catch(e) { return null; }
@@ -5835,7 +5914,7 @@ function genRef() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const values = new Uint32Array(6);
   crypto.getRandomValues(values);
-  let r = 'NX-';
+  let r = 'LX-';
   for (let i = 0; i < values.length; i++) r += chars[values[i] % chars.length];
   return r;
 }
@@ -6400,11 +6479,17 @@ document.getElementById('l-email').addEventListener('keydown', e => { if (e.key 
 const GESTION_CLIENTES_KEY = 'nexlex_gestion_clientes_v1';
 const GESTION_CASOS_KEY    = 'nexlex_gestion_casos_v1';
 
-/* ── Storage local (fallback) ── */
-function getGestionClientes() { try { return JSON.parse(_storage.getItem(GESTION_CLIENTES_KEY)) || []; } catch { return []; } }
-function saveGestionClientes(list) { try { _storage.setItem(GESTION_CLIENTES_KEY, JSON.stringify(list)); } catch {} }
-function getGestionCasos()    { try { return JSON.parse(_storage.getItem(GESTION_CASOS_KEY))    || []; } catch { return []; } }
-function saveGestionCasos(list)    { try { _storage.setItem(GESTION_CASOS_KEY,    JSON.stringify(list)); } catch {} }
+/* ── Caché de sesión + migración única desde almacenamiento legado ── */
+let _gestionClientesCache = (() => {
+  try { return JSON.parse(_storage.getItem(GESTION_CLIENTES_KEY) || '[]') || []; } catch { return []; }
+})();
+let _gestionCasosCache = (() => {
+  try { return JSON.parse(_storage.getItem(GESTION_CASOS_KEY) || '[]') || []; } catch { return []; }
+})();
+function getGestionClientes() { return _gestionClientesCache; }
+function saveGestionClientes(list) { _gestionClientesCache = Array.isArray(list) ? list : []; }
+function getGestionCasos() { return _gestionCasosCache; }
+function saveGestionCasos(list) { _gestionCasosCache = Array.isArray(list) ? list : []; }
 
 /* ── Supabase helpers para Gestión ── */
 function _rowToGestionCliente(row) {
@@ -6521,6 +6606,10 @@ async function _syncGestionSupabase() {
     } else if (remoteCasos.length) {
       saveGestionCasos(remoteCasos);
     }
+    try {
+      _storage.removeItem(GESTION_CLIENTES_KEY);
+      _storage.removeItem(GESTION_CASOS_KEY);
+    } catch {}
   } catch (e) {
     console.warn('[LEAX | SJT] Sincronización de Gestión no disponible; se mantiene caché local:', e?.message || e);
   }
