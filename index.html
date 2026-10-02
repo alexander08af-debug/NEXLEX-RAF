@@ -2818,6 +2818,40 @@ body.connect-public-mode #page-connect { display:flex !important; }
         <h4>🔍 Explorar empresa — <span id="sa-viewing-name" style="color:var(--brand);font-weight:700"></span></h4>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px" id="sa-quick-actions"></div>
       </div>
+
+      <div class="config-section" id="sa-content-center" style="margin:0;grid-column:1/-1">
+        <h4>🌐 Publicación y alcance de contenido</h4>
+        <div style="font-size:11px;color:var(--fg3);line-height:1.6;margin-bottom:12px">
+          Decide qué contenido queda privado, solo para tu empresa, compartido con empresas seleccionadas o disponible para todas las empresas.
+        </div>
+        <div style="display:grid;grid-template-columns:170px 1fr 190px;gap:10px;align-items:end">
+          <div>
+            <label style="display:block;font-size:10px;color:var(--fg3);margin-bottom:5px">Tipo</label>
+            <select id="sa-content-type" onchange="renderSAContentItems()" style="width:100%;background:var(--card);border:1px solid var(--border-hi);border-radius:var(--radius);padding:8px 10px;color:var(--fg);font-family:inherit">
+              <option value="jurisprudencia">Jurisprudencia</option>
+              <option value="mapa_procedimiento">Mapa Procesal</option>
+            </select>
+          </div>
+          <div>
+            <label style="display:block;font-size:10px;color:var(--fg3);margin-bottom:5px">Contenido</label>
+            <select id="sa-content-item" onchange="loadSAContentScope()" style="width:100%;background:var(--card);border:1px solid var(--border-hi);border-radius:var(--radius);padding:8px 10px;color:var(--fg);font-family:inherit"></select>
+          </div>
+          <div>
+            <label style="display:block;font-size:10px;color:var(--fg3);margin-bottom:5px">Alcance</label>
+            <select id="sa-content-scope" onchange="renderSACompanyTargets()" style="width:100%;background:var(--card);border:1px solid var(--border-hi);border-radius:var(--radius);padding:8px 10px;color:var(--fg);font-family:inherit">
+              <option value="privado">Privado — solo yo</option>
+              <option value="empresa">Mi empresa</option>
+              <option value="seleccion">Empresas seleccionadas</option>
+              <option value="global">Todas las empresas</option>
+            </select>
+          </div>
+        </div>
+        <div id="sa-content-targets" style="margin-top:12px;display:none"></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:12px">
+          <button class="btn btn-accent btn-sm" onclick="saveSAContentScope()">Guardar alcance</button>
+          <span id="sa-content-status" style="font-size:10.5px;color:var(--fg3)"></span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -3548,6 +3582,11 @@ body.connect-public-mode #page-connect { display:flex !important; }
      10. REGISTRO DE NOTIFICACIONES
   ────────────────────────────────────────────── */
   window.LEAX_NOTIFICATIONS = {};
+  window.LEAX_CONTENT_DISTRIBUTION = Object.freeze({
+    scopes:['privado','empresa','seleccion','global'],
+    managedFrom:'superadmin',
+    types:['jurisprudencia','mapa_procedimiento']
+  });
 
   /* ══════════════════════════════════════════════
      API INTERNA — FUNCIONES OFICIALES DE REGISTRO
@@ -3991,6 +4030,154 @@ function getNotas()        { return DB_NOTAS[getEmpresaId()]  || {}; }
 function getVinculos()     { return DB_VINCULOS[getEmpresaId()] || []; }
 function getEmpresa()      { return DB_EMPRESAS[getEmpresaId()]; }
 
+function _contentSourceKey(type, item) {
+  if (type === 'jurisprudencia') return 'juris:' + String(item?.id ?? '');
+  const slug = String(item?.n || 'procedimiento').normalize('NFKD').toLowerCase()
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,120);
+  return 'mapa:' + slug;
+}
+
+function _stripSharedContent(eid) {
+  if (DB_JURIS[eid]) DB_JURIS[eid] = DB_JURIS[eid].filter(x => !x?._sharedReadonly);
+  if (DB_PROCS[eid]) DB_PROCS[eid] = DB_PROCS[eid].filter(x => !x?._sharedReadonly);
+}
+
+function _sharedJurisFromRow(row) {
+  const p = row.payload || {};
+  const num = parseInt(String(row.id).replace(/-/g,'').slice(0,8),16);
+  return {
+    ...p,
+    id: Number.isFinite(num) ? 900000000 + (num % 90000000) : Date.now(),
+    _sharedReadonly:true,
+    _sharedContentId:row.id,
+    _sharedOwnerEmpresa:row.owner_empresa_id,
+    _sharedScope:row.alcance,
+    empresaId:getEmpresaId(),
+  };
+}
+
+function _sharedProcFromRow(row) {
+  const p = row.payload || {};
+  return {
+    e:p.e || '📘',
+    n:p.n || row.titulo || 'Procedimiento compartido',
+    s:Array.isArray(p.s) ? [...p.s] : [],
+    _sharedReadonly:true,
+    _sharedContentId:row.id,
+    _sharedOwnerEmpresa:row.owner_empresa_id,
+    _sharedScope:row.alcance,
+  };
+}
+
+async function _syncDistributedContent() {
+  const eid=getEmpresaId(), empresaUuid=getEmpresaUuid();
+  if(!_supa||!SESSION||!eid||!empresaUuid) return;
+  _stripSharedContent(eid);
+  try{
+    const {data,error}=await _supa.from('contenido_distribucion')
+      .select('id,owner_empresa_id,tipo,source_key,titulo,payload,alcance,empresas_destino,activo,created_by,updated_at')
+      .eq('activo',true);
+    if(error) throw error;
+    const incoming=(data||[]).filter(r=>r.owner_empresa_id!==empresaUuid);
+    if(!DB_JURIS[eid]) DB_JURIS[eid]=[];
+    if(!DB_PROCS[eid]) DB_PROCS[eid]=[];
+    for(const row of incoming){
+      if(row.tipo==='jurisprudencia') DB_JURIS[eid].push(_sharedJurisFromRow(row));
+      else if(row.tipo==='mapa_procedimiento') DB_PROCS[eid].push(_sharedProcFromRow(row));
+    }
+    if(document.getElementById('page-mapa')?.classList.contains('active')) renderMapa();
+    if(document.getElementById('page-juris')?.classList.contains('active')) initJuris();
+  }catch(e){
+    console.warn('[LEAX | SJT] Contenido compartido no disponible:',e?.message||e);
+  }
+}
+
+async function _getContentDistributionRow(type, sourceKey) {
+  if(!_supa||!SESSION||!getEmpresaUuid()) return null;
+  const {data,error}=await _supa.from('contenido_distribucion')
+    .select('id,owner_empresa_id,tipo,source_key,titulo,payload,alcance,empresas_destino,activo,created_by,updated_at')
+    .eq('owner_empresa_id',getEmpresaUuid()).eq('tipo',type).eq('source_key',sourceKey).maybeSingle();
+  if(error) throw error;
+  return data||null;
+}
+
+function renderSAContentItems() {
+  if(!isSuperAdmin()) return;
+  const type=document.getElementById('sa-content-type')?.value||'jurisprudencia';
+  const sel=document.getElementById('sa-content-item');
+  if(!sel) return;
+  const ownOnly = type==='jurisprudencia'
+    ? getJuris().filter(x=>!x?._sharedReadonly)
+    : getProcs().filter(x=>!x?._sharedReadonly);
+  sel.innerHTML=ownOnly.map((x,i)=>{
+    const label=type==='jurisprudencia'?(x.t||('Sentencia '+x.id)):((x.e||'📘')+' '+(x.n||'Procedimiento'));
+    return `<option value="${i}">${escapeHtml(label)}</option>`;
+  }).join('');
+  loadSAContentScope();
+}
+
+async function loadSAContentScope() {
+  if(!isSuperAdmin()) return;
+  const type=document.getElementById('sa-content-type')?.value||'jurisprudencia';
+  const idx=Number(document.getElementById('sa-content-item')?.value||0);
+  const item=(type==='jurisprudencia'?getJuris().filter(x=>!x?._sharedReadonly):getProcs().filter(x=>!x?._sharedReadonly))[idx];
+  const scope=document.getElementById('sa-content-scope');
+  const status=document.getElementById('sa-content-status');
+  if(!item||!scope) return;
+  try{
+    const row=await _getContentDistributionRow(type,_contentSourceKey(type,item));
+    scope.value=row?.alcance||'empresa';
+    scope.dataset.rowId=row?.id||'';
+    scope.dataset.targets=JSON.stringify(row?.empresas_destino||[]);
+    renderSACompanyTargets();
+    if(status) status.textContent=row ? 'Configuración cargada.' : 'Este contenido todavía no tiene una regla de distribución guardada.';
+  }catch(e){if(status)status.textContent='No se pudo cargar el alcance.';}
+}
+
+function renderSACompanyTargets() {
+  const wrap=document.getElementById('sa-content-targets');
+  const scope=document.getElementById('sa-content-scope');
+  if(!wrap||!scope) return;
+  if(scope.value!=='seleccion'){wrap.style.display='none';wrap.innerHTML='';return;}
+  wrap.style.display='';
+  let selected=[]; try{selected=JSON.parse(scope.dataset.targets||'[]')}catch{}
+  const own=getEmpresaUuid();
+  wrap.innerHTML='<div style="font-size:10px;color:var(--fg3);margin-bottom:7px">Selecciona las empresas que podrán ver este contenido:</div>'+
+    (_adminDirectory.companies||[]).filter(e=>e.id!==own&&e.activo!==false).map(e=>`
+      <label style="display:inline-flex;align-items:center;gap:6px;margin:0 10px 8px 0;font-size:11px;color:var(--fg2)">
+        <input type="checkbox" class="sa-content-company" value="${e.id}" ${selected.includes(e.id)?'checked':''} style="accent-color:var(--brand)">
+        ${escapeHtml(e.nombre)}
+      </label>`).join('');
+}
+
+async function saveSAContentScope() {
+  if(!isSuperAdmin()) {toast('Solo Super Admin puede publicar contenido','err');return;}
+  const type=document.getElementById('sa-content-type')?.value||'jurisprudencia';
+  const idx=Number(document.getElementById('sa-content-item')?.value||0);
+  const scope=document.getElementById('sa-content-scope')?.value||'empresa';
+  const items=type==='jurisprudencia'?getJuris().filter(x=>!x?._sharedReadonly):getProcs().filter(x=>!x?._sharedReadonly);
+  const item=items[idx];
+  if(!item){toast('Selecciona contenido','err');return;}
+  const targets=scope==='seleccion'
+    ? [...document.querySelectorAll('.sa-content-company:checked')].map(x=>x.value)
+    : [];
+  const title=type==='jurisprudencia'?(item.t||('Sentencia '+item.id)):((item.e||'📘')+' '+(item.n||'Procedimiento'));
+  const payload=type==='jurisprudencia'
+    ? {t:item.t||'',f:item.f||'',fu:item.fu||'',area:item.area||'General',kw:Array.isArray(item.kw)?item.kw:[],d:item.d||'',texto:item.texto||'',fav:false,nuevo:item.nuevo===true,importante:item.importante===true,analisis:item.analisis||null}
+    : {e:item.e||'📘',n:item.n||'',s:Array.isArray(item.s)?item.s:[]};
+  try{
+    const row={
+      owner_empresa_id:getEmpresaUuid(),tipo:type,source_key:_contentSourceKey(type,item),titulo:title,
+      payload,alcance:scope,empresas_destino:targets,activo:true,created_by:SESSION.id,
+      updated_at:new Date().toISOString()
+    };
+    const {error}=await _supa.from('contenido_distribucion').upsert(row,{onConflict:'owner_empresa_id,tipo,source_key'});
+    if(error) throw error;
+    document.getElementById('sa-content-status').textContent='Alcance guardado correctamente.';
+    toast('🌐 Alcance de contenido actualizado','ok');
+  }catch(e){toast(e?.message||'No se pudo guardar el alcance','err');}
+}
+
 function _dateLabelFromISO(iso) {
   try { return new Date(iso).toLocaleDateString('es-DO', { day:'2-digit', month:'short', year:'numeric' }); }
   catch { return ''; }
@@ -4130,7 +4317,7 @@ function _jurisRowToLocal(row) {
 
 async function _supaUpsertJuris(j) {
   const empresaUuid = getEmpresaUuid();
-  if (!_supa || !empresaUuid || !SESSION || !can('write') || !j) return false;
+  if (!_supa || !empresaUuid || !SESSION || !can('write') || !j || j._sharedReadonly) return false;
   try {
     const { error } = await _supa.from('jurisprudencia')
       .upsert(_jurisToRow(j), { onConflict:'empresa_id,legacy_id' });
@@ -4436,6 +4623,7 @@ function iniciarSesion(user) {
   renderUserPill();
   updateConfigPage();
   _syncLegalKnowledge();
+  _syncDistributedContent();
 
   renderMapa(); buildCal(); renderStats(); initJuris();
   goPage('inicio');
@@ -4802,11 +4990,11 @@ function renderMapa() {
     c.innerHTML = `
       <div class="bar" style="background:${CC[i % CC.length]}"></div>
       <div class="cc">
-        <div class="name">${escapeHtml(p.e)} ${escapeHtml(p.n)}</div>
+        <div class="name">${escapeHtml(p.e)} ${escapeHtml(p.n)} ${p._sharedReadonly?'<span style="font-size:9px;color:var(--brand);font-weight:700">COMPARTIDO</span>':''}</div>
         <div class="sub">${p.s.length} subtipo${p.s.length !== 1 ? 's' : ''}</div>
       </div>`;
     c.addEventListener('click', () => openSubtipos(i));
-    c.addEventListener('contextmenu', e => { if (!can('write')) return; e.preventDefault(); showCtx(e, i); });
+    c.addEventListener('contextmenu', e => { if (!can('write') || p._sharedReadonly) return; e.preventDefault(); showCtx(e, i); });
     g.appendChild(c);
   });
 }
@@ -4831,6 +5019,7 @@ function showCtx(e, idx) {
 }
 function ctxRename() {
   if (!can('write') || ctxIdx === null) return;
+  if (getProcs()[ctxIdx]?._sharedReadonly) { toast('El contenido compartido es de solo lectura', 'err'); return; }
   const nv = prompt('Nuevo nombre:', getProcs()[ctxIdx].n);
   if (nv && nv.trim()) { getProcs()[ctxIdx].n = nv.trim(); renderMapa(); }
   document.getElementById('ctx-menu').style.display = 'none';
@@ -4838,6 +5027,7 @@ function ctxRename() {
 function ctxDelete() {
   if (!can('write') || ctxIdx === null) { toast('Sin permiso', 'err'); return; }
   const procs = getProcs();
+  if (procs[ctxIdx]?._sharedReadonly) { toast('El contenido compartido es de solo lectura', 'err'); return; }
   if (confirm(`¿Eliminar "${procs[ctxIdx].e} ${procs[ctxIdx].n}"?`)) {
     procs.splice(ctxIdx, 1); renderMapa(); toast('Eliminado', 'ok');
   }
@@ -4869,6 +5059,7 @@ function renderSubList(list) {
 }
 function addSubtipo() {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
+  if (getProcs()[curProc]?._sharedReadonly) { toast('El contenido compartido es de solo lectura', 'err'); return; }
   const n = prompt('Nombre del nuevo subtipo:');
   if (n && n.trim()) {
     getProcs()[curProc].s.push(n.trim());
@@ -5106,6 +5297,7 @@ function renderJurisFav() {
 function toggleFav(id, btn) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const juris = getJuris(); const j = juris.find(x => x.id === id); if (!j) return;
+  if (j._sharedReadonly) { toast('La jurisprudencia compartida es de solo lectura', 'err'); return; }
   j.fav = !j.fav; if (btn) btn.classList.toggle('on', j.fav);
   _supaUpsertJuris(j);
   updateJBadges(); toast(j.fav ? '⭐ Agregada a favoritas' : 'Removida de favoritas', 'ok');
@@ -5115,6 +5307,7 @@ function toggleFav(id, btn) {
 function toggleFavFromModal() {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const juris = getJuris(); const j = juris.find(x => x.id === window._detailId); if (!j) return;
+  if (j._sharedReadonly) { toast('La jurisprudencia compartida es de solo lectura', 'err'); return; }
   j.fav = !j.fav;
   _supaUpsertJuris(j);
   document.getElementById('jd-fav-btn').classList.toggle('on', j.fav);
@@ -5745,6 +5938,7 @@ function saChangeEmpresa(realEmpresaId) {
     }
   });
   _syncLegalKnowledge();
+  _syncDistributedContent();
 
   renderSAQuickActions(localKey);
   toast(`Viendo empresa: ${empresa.nombre}`, 'ok');
@@ -5804,6 +5998,7 @@ function renderSuperAdminPage() {
   const vn = document.getElementById('sa-viewing-name');
   if (vn) vn.textContent = SESSION?.empresaNombre || companies.find(e=>e.id===getEmpresaUuid())?.nombre || '';
   renderSAQuickActions(window._saViewEmpresa || 'e1');
+  renderSAContentItems();
 }
 
 function renderSAQuickActions(eid) {
@@ -6570,6 +6765,30 @@ async function loadPublicTracking() {
         </div>
         <div style="font-size:11px;color:var(--fg3);margin-top:8px">Profesional asignado: <strong style="color:var(--fg2)">${escapeHtml(q.abogado_asignado||'Sin asignar')}</strong></div>
       </div>`;
+    const caso=data.caso||null;
+    const statusBox=document.getElementById('pt-status');
+    if(caso){
+      const acts=Array.isArray(caso.actuaciones)?caso.actuaciones:[];
+      const actHtml=acts.length?acts.slice().reverse().map(a=>`
+        <div style="padding:9px 0;border-bottom:1px solid var(--border)">
+          <div style="font-size:11px;font-weight:700;color:var(--fg)">${escapeHtml(TIPOS_ACTUACION.find(t=>t.key===a.tipo)?.label||a.tipo||'Actualización')}</div>
+          ${a.descripcion?`<div style="font-size:11px;color:var(--fg2);margin-top:3px">${escapeHtml(a.descripcion)}</div>`:''}
+          ${a.resultado?`<div style="font-size:10px;color:var(--fg3);margin-top:3px">Resultado: ${escapeHtml(a.resultado)}</div>`:''}
+          ${a.proximoPaso?`<div style="font-size:10px;color:var(--brand);margin-top:3px">Próximo paso: ${escapeHtml(a.proximoPaso)}</div>`:''}
+          <div style="font-size:9.5px;color:var(--fg3);margin-top:4px">${a.fecha?new Date(a.fecha).toLocaleString('es-DO',{day:'2-digit',month:'2-digit',year:'numeric'}):''}</div>
+        </div>`).join(''):'<div style="font-size:11px;color:var(--fg3);padding:8px 0">Aún no hay actuaciones públicas del expediente.</div>';
+      statusBox.insertAdjacentHTML('beforeend',`
+        <div class="track-result-card" style="margin-top:10px">
+          <div style="font-size:12px;font-weight:700;color:var(--fg);margin-bottom:6px">📁 Expediente ${escapeHtml(caso.id)}</div>
+          <div style="font-size:11px;color:var(--fg2)">${escapeHtml(caso.materia||'')} ${caso.subtipo?'· '+escapeHtml(caso.subtipo):''}</div>
+          <div style="font-size:10.5px;color:var(--fg3);margin-top:4px">Estado del caso: <strong style="color:var(--fg2)">${escapeHtml(caso.estado||'activo')}</strong> · Abogado: <strong style="color:var(--fg2)">${escapeHtml(caso.abogado||'Por asignar')}</strong></div>
+          ${caso.tribunal?`<div style="font-size:10.5px;color:var(--fg3);margin-top:3px">Tribunal: ${escapeHtml(caso.tribunal)}</div>`:''}
+          ${caso.numero_pj?`<div style="font-size:10.5px;color:var(--fg3);margin-top:3px">Ref. Poder Judicial: ${escapeHtml(caso.numero_pj)}</div>`:''}
+          <div style="font-size:10px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;margin-top:12px">Etapas y actuaciones visibles</div>
+          <div>${actHtml}</div>
+        </div>`);
+    }
+
     const msgs=Array.isArray(data.mensajes)?data.mensajes:[];
     const thread=document.getElementById('pt-thread');
     if(!msgs.length) thread.innerHTML='<div class="conv-empty">No hay mensajes todavía. Cuando el equipo legal responda, aparecerá aquí y recibirás aviso por correo si suministraste uno.</div>';
@@ -8259,6 +8478,11 @@ function guardarActuacion(casoId) {
   if (tipo === 'fallo_emitido' && cs.estado === 'activo') cs.estado = 'cerrado';
   saveGestionCasos(casos);
   _supaUpsertCaso(cs);
+  if (visible && cs.origenConnectId) {
+    _supa.functions.invoke('leax-case-progress', {
+      body:{ caso_id:casoId, tipo, descripcion:actuacion.descripcion }
+    }).catch(()=>{});
+  }
 
   // Re-render cronología sin cerrar modal
   const MI_ti = {audiencia_conocida:'⚖',audiencia_aplazada:'📅',audiencia_suspendida:'⚠',fallo_emitido:'🏛',doc_depositado:'📤',doc_recibido:'📥',diligencia:'🔧',nota_interna:'🔒',otro:'📋'};
