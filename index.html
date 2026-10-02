@@ -4233,6 +4233,69 @@ document.getElementById('user-pill').addEventListener('click', e => {
 ══════════════════════════════════════════ */
 const EA = () => document.getElementById('editor-area');
 
+/* Seguridad editor: conserva formato permitido y elimina HTML/atributos ejecutables. */
+function sanitizeEditorHtml(html) {
+  const tpl = document.createElement('template');
+  tpl.innerHTML = String(html ?? '');
+  const ALLOWED_TAGS = new Set(['P','DIV','BR','B','STRONG','I','EM','U','UL','OL','LI','H1','H2','H3','H4','H5','H6','SPAN','FONT','BLOCKQUOTE']);
+  const DROP_TAGS = new Set(['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','SVG','MATH','LINK','META','BASE','FORM','INPUT','BUTTON','TEXTAREA','SELECT','OPTION','VIDEO','AUDIO','SOURCE']);
+  const SAFE_STYLES = new Set(['text-align','margin-left','font-size','font-family','font-weight','font-style','text-decoration']);
+
+  const cleanStyle = value => String(value || '').split(';').map(part => {
+    const idx = part.indexOf(':');
+    if (idx < 0) return '';
+    const prop = part.slice(0, idx).trim().toLowerCase();
+    const val  = part.slice(idx + 1).trim();
+    if (!SAFE_STYLES.has(prop)) return '';
+    if (/url\s*\(|expression\s*\(|javascript:|vbscript:|behavior\s*:/i.test(val)) return '';
+    return `${prop}:${val}`;
+  }).filter(Boolean).join(';');
+
+  const walk = root => {
+    [...root.childNodes].forEach(node => {
+      if (node.nodeType === Node.COMMENT_NODE) { node.remove(); return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      const tag = node.tagName.toUpperCase();
+      if (DROP_TAGS.has(tag)) { node.remove(); return; }
+      if (!ALLOWED_TAGS.has(tag)) {
+        // Primero sanea descendientes; luego conserva solo su contenido seguro.
+        walk(node);
+        const frag = document.createDocumentFragment();
+        while (node.firstChild) frag.appendChild(node.firstChild);
+        node.replaceWith(frag);
+        return;
+      }
+      [...node.attributes].forEach(attr => {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith('on') || ['href','src','srcdoc','formaction','xlink:href'].includes(name)) {
+          node.removeAttribute(attr.name); return;
+        }
+        if (name === 'style') {
+          const safe = cleanStyle(attr.value);
+          if (safe) node.setAttribute('style', safe); else node.removeAttribute('style');
+          return;
+        }
+        if (tag === 'FONT' && (name === 'face' || name === 'size')) return;
+        if (name === 'align' && /^(left|center|right|justify)$/i.test(attr.value)) return;
+        node.removeAttribute(attr.name);
+      });
+      walk(node);
+    });
+  };
+  walk(tpl.content);
+  return tpl.innerHTML;
+}
+
+function handleEditorPaste(e) {
+  const html = e.clipboardData?.getData('text/html');
+  const plain = e.clipboardData?.getData('text/plain') || '';
+  e.preventDefault();
+  if (html) document.execCommand('insertHTML', false, sanitizeEditorHtml(html));
+  else document.execCommand('insertText', false, plain);
+  setTimeout(updateWC, 0);
+}
+EA()?.addEventListener('paste', handleEditorPaste);
+
 function doCmd(cmd, val = null) { EA().focus(); document.execCommand(cmd, false, val); syncTb(); updateWC(); }
 function toggleFmt(cmd)         { doCmd(cmd); syncTb(); }
 function doAlign(dir, btnId)    {
@@ -4264,7 +4327,9 @@ function editorKey(e) {
 }
 function saveEditor() {
   const k = document.getElementById('editor-title').textContent;
-  savedDocs[k] = EA().innerHTML;
+  const cleanHtml = sanitizeEditorHtml(EA().innerHTML);
+  EA().innerHTML = cleanHtml;
+  savedDocs[k] = cleanHtml;
   toast('Guardado correctamente', 'ok');
   closeModal('modal-editor');
 }
@@ -4327,8 +4392,8 @@ function openEditor(nombre) {
     'Recurso contencioso administrativo': `<h3>Recurso Contencioso Administrativo</h3><p><strong>Base legal:</strong> Ley 1494 y Arts. Constitución sobre control de actos del Estado.</p><p><strong>¿Cuándo procede?</strong> Contra actos administrativos definitivos de la Administración Pública que lesionen derechos o intereses.</p><h4>Pasos:</h4><ol><li>Agotar la vía administrativa: recurso jerárquico previo</li><li>Si no hay respuesta en 30 días: silencio administrativo negativo</li><li>Depositar recurso ante el Tribunal Superior Administrativo (TSA) en Santo Domingo, o Tribunal de Primera Instancia con competencia administrativa</li><li>Plazo: 30 días desde la notificación del acto</li><li>Proceso escrito con alegatos y pruebas</li><li>Sentencia</li></ol><p><strong>Tribunal competente:</strong> Tribunal Superior Administrativo (primer nivel), Corte Suprema (casación).</p>`,
   };
 
-  ea.innerHTML = savedDocs[nombre] || PROC_CONTENT[nombre] ||
-    `<h3>${nombre}</h3><p><strong>Procedimiento:</strong> ${nombre}</p><p><strong>Base legal:</strong> [Indicar artículos y leyes aplicables]</p><h4>Documentos requeridos:</h4><ul><li>Cédula de identidad</li><li>Documentos específicos del caso</li></ul><h4>Pasos procesales:</h4><ol><li>Consultar con abogado especializado</li><li>Reunir documentación</li><li>Presentar ante tribunal competente</li><li>Seguimiento del proceso</li></ol><p><strong>Nota:</strong> Este procedimiento aplica bajo el derecho dominicano. Consulte siempre con un abogado habilitado.</p>`;
+  ea.innerHTML = savedDocs[nombre] ? sanitizeEditorHtml(savedDocs[nombre]) : (PROC_CONTENT[nombre] ||
+    `<h3>${escapeHtml(nombre)}</h3><p><strong>Procedimiento:</strong> ${escapeHtml(nombre)}</p><p><strong>Base legal:</strong> [Indicar artículos y leyes aplicables]</p><h4>Documentos requeridos:</h4><ul><li>Cédula de identidad</li><li>Documentos específicos del caso</li></ul><h4>Pasos procesales:</h4><ol><li>Consultar con abogado especializado</li><li>Reunir documentación</li><li>Presentar ante tribunal competente</li><li>Seguimiento del proceso</li></ol><p><strong>Nota:</strong> Este procedimiento aplica bajo el derecho dominicano. Consulte siempre con un abogado habilitado.</p>`);
 
   updateWC(); syncTb(); openModal('modal-editor');
   setTimeout(() => ea.focus(), 150);
@@ -4351,7 +4416,7 @@ function renderMapa() {
     c.innerHTML = `
       <div class="bar" style="background:${CC[i % CC.length]}"></div>
       <div class="cc">
-        <div class="name">${p.e} ${p.n}</div>
+        <div class="name">${escapeHtml(p.e)} ${escapeHtml(p.n)}</div>
         <div class="sub">${p.s.length} subtipo${p.s.length !== 1 ? 's' : ''}</div>
       </div>`;
     c.addEventListener('click', () => openSubtipos(i));
@@ -4411,7 +4476,7 @@ function renderSubList(list) {
   list.forEach(s => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;justify-content:space-between;align-items:center;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:11px 14px';
-    row.innerHTML = `<span style="font-size:12.5px">${s}</span><button class="btn btn-accent btn-sm">Abrir editor</button>`;
+    row.innerHTML = `<span style="font-size:12.5px">${escapeHtml(s)}</span><button class="btn btn-accent btn-sm">Abrir editor</button>`;
     row.querySelector('button').addEventListener('click', () => openEditor(s));
     el.appendChild(row);
   });
@@ -4496,6 +4561,7 @@ function abrirAddAud(fecha) {
   document.getElementById('ctx-menu').style.display = 'none';
 }
 function saveAud() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (!audDate) { toast('Haz click en un día', 'err'); return; }
   const auds   = getAuds();
   const cli    = document.getElementById('aud-cliente').value.trim() || 'Sin nombre';
@@ -4518,17 +4584,18 @@ function verAuds(fecha) {
     : av.map((a, i) => `
         <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px;margin-bottom:10px;border-left:4px solid ${SC[a.estado] || '#8892b0'}">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:7px">
-            <span style="font-size:13px;font-weight:700">${a.cliente}</span>
-            <span class="badge" style="background:${SC[a.estado]}22;color:${SC[a.estado]}">${a.estado}</span>
+            <span style="font-size:13px;font-weight:700">${escapeHtml(a.cliente)}</span>
+            <span class="badge" style="background:${SC[a.estado]}22;color:${SC[a.estado]}">${escapeHtml(a.estado)}</span>
           </div>
-          <div style="font-size:11.5px;color:var(--fg2)">🕐 ${a.hora} · ${a.tipo}</div>
-          ${a.nota ? `<div style="font-size:11.5px;color:var(--fg3);margin-top:7px">📝 ${a.nota}</div>` : ''}
+          <div style="font-size:11.5px;color:var(--fg2)">🕐 ${escapeHtml(a.hora)} · ${escapeHtml(a.tipo)}</div>
+          ${a.nota ? `<div style="font-size:11.5px;color:var(--fg3);margin-top:7px">📝 ${escapeHtml(a.nota)}</div>` : ''}
           <div style="margin-top:12px">${can('write') ? `<button class="btn btn-ghost btn-sm" onclick="delAud('${fecha}',${i})">🗑 Eliminar</button>` : ''}</div>
         </div>`).join('');
   document.getElementById('ver-aud-add-btn').onclick = () => abrirAddAud(fecha);
   openModal('modal-ver-aud');
 }
 function delAud(fecha, idx) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (confirm('¿Eliminar?')) {
     const auds = getAuds();
     auds[fecha].splice(idx, 1);
@@ -4589,12 +4656,12 @@ function switchJTab(tab) {
 
 function jCard(j) {
   const notasDB = getNotas(); const nc = (notasDB[j.id] || []).length;
-  const kwtags  = j.kw ? j.kw.slice(0,3).map(k => `<span class="badge badge-area" style="margin-right:4px">${k}</span>`).join('') : '';
+  const kwtags  = j.kw ? j.kw.slice(0,3).map(k => `<span class="badge badge-area" style="margin-right:4px">${escapeHtml(k)}</span>`).join('') : '';
   return `<div class="jcard" style="border-left-color:${j.fav ? 'var(--amber)' : 'var(--border-hi)'}">
     <div class="jcard-header">
       <div style="flex:1">
-        <div class="jcard-title">${j.t}</div>
-        <div class="jcard-meta">${j.fu} · ${j.f} · ${j.area || 'General'}</div>
+        <div class="jcard-title">${escapeHtml(j.t)}</div>
+        <div class="jcard-meta">${escapeHtml(j.fu)} · ${escapeHtml(j.f)} · ${escapeHtml(j.area || 'General')}</div>
       </div>
       <div style="display:flex;align-items:center;gap:5px;flex-shrink:0">
         ${j.nuevo      ? `<span class="badge badge-new">Nuevo</span>`       : ''}
@@ -4603,7 +4670,7 @@ function jCard(j) {
         <button class="fav-btn${j.fav ? ' on' : ''}" onclick="toggleFav(${j.id},this)" title="${j.fav ? 'Quitar favorito' : 'Agregar favorito'}">⭐</button>
       </div>
     </div>
-    <p style="font-size:12px;color:var(--fg2);line-height:1.65;margin-bottom:10px">${j.d}</p>
+    <p style="font-size:12px;color:var(--fg2);line-height:1.65;margin-bottom:10px">${escapeHtml(j.d)}</p>
     ${kwtags ? `<div style="margin-bottom:10px">${kwtags}</div>` : ''}
     <div class="jcard-actions">
       <button class="btn btn-ghost btn-sm" onclick="openJurisDet(${j.id})">📋 Ver detalle</button>
@@ -4637,6 +4704,7 @@ function renderJurisFav() {
 }
 
 function toggleFav(id, btn) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const juris = getJuris(); const j = juris.find(x => x.id === id); if (!j) return;
   j.fav = !j.fav; if (btn) btn.classList.toggle('on', j.fav);
   updateJBadges(); toast(j.fav ? '⭐ Agregada a favoritas' : 'Removida de favoritas', 'ok');
@@ -4644,6 +4712,7 @@ function toggleFav(id, btn) {
 }
 
 function toggleFavFromModal() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const juris = getJuris(); const j = juris.find(x => x.id === window._detailId); if (!j) return;
   j.fav = !j.fav;
   document.getElementById('jd-fav-btn').classList.toggle('on', j.fav);
@@ -4659,19 +4728,19 @@ function openJurisDet(id) {
   document.getElementById('jd-titulo').textContent = j.t;
   document.getElementById('jd-meta').textContent   = `${j.fu} · ${j.f} · ${j.area || 'General'}`;
   document.getElementById('jd-fav-btn').classList.toggle('on', j.fav);
-  document.getElementById('jd-kwtags').innerHTML   = (j.kw || []).map(k => `<span class="badge badge-area">${k}</span>`).join('');
+  document.getElementById('jd-kwtags').innerHTML   = (j.kw || []).map(k => `<span class="badge badge-area">${escapeHtml(k)}</span>`).join('');
   document.getElementById('jd-desc').textContent   = j.d;
   const nc = (notasDB[id] || []).length;
   const notasSec = document.getElementById('jd-notas-section');
   if (nc > 0) {
-    notasSec.innerHTML = `<div style="font-size:10px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px;margin-top:10px">Mis notas (${nc})</div>${(notasDB[id] || []).map(n => `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;margin-bottom:7px"><div style="font-size:12px;line-height:1.6;color:var(--fg)">${n.txt}</div><div style="font-size:10px;color:var(--fg3);margin-top:5px">${n.fecha} · ${n.usuario}</div></div>`).join('')}`;
+    notasSec.innerHTML = `<div style="font-size:10px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;margin-bottom:9px;margin-top:10px">Mis notas (${nc})</div>${(notasDB[id] || []).map(n => `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:11px 13px;margin-bottom:7px"><div style="font-size:12px;line-height:1.6;color:var(--fg)">${escapeHtml(n.txt)}</div><div style="font-size:10px;color:var(--fg3);margin-top:5px">${escapeHtml(n.fecha)} · ${escapeHtml(n.usuario)}</div></div>`).join('')}`;
   } else notasSec.innerHTML = '';
   openModal('modal-juris-det');
 }
 
 function populateAISel() {
   const sel = document.getElementById('ai-sel'); if (!sel) return;
-  sel.innerHTML = '<option value="">-- Seleccionar sentencia --</option>' + getJuris().map(j => `<option value="${j.id}">${j.t}</option>`).join('');
+  sel.innerHTML = '<option value="">-- Seleccionar sentencia --</option>' + getJuris().map(j => `<option value="${j.id}">${escapeHtml(j.t)}</option>`).join('');
 }
 
 function analizarIA() {
@@ -4682,7 +4751,7 @@ function analizarIA() {
   const btn = document.getElementById('btn-analizar'); const orig = btn.textContent;
   btn.disabled = true; btn.textContent = 'Analizando...';
   const el  = document.getElementById('ai-result');
-  el.innerHTML = `<div class="ai-loader"><div style="font-size:12px;color:var(--fg2);margin-bottom:5px">Analizando: <em>${j.t}</em></div><div class="lbar"><div class="lbar-inner" id="ai-bar"></div></div><div style="font-size:11px;color:var(--fg3)" id="ai-st">Iniciando...</div></div>`;
+  el.innerHTML = `<div class="ai-loader"><div style="font-size:12px;color:var(--fg2);margin-bottom:5px">Analizando: <em>${escapeHtml(j.t)}</em></div><div class="lbar"><div class="lbar-inner" id="ai-bar"></div></div><div style="font-size:11px;color:var(--fg3)" id="ai-st">Iniciando...</div></div>`;
   const msgs = ['Leyendo texto completo...','Identificando criterios jurídicos...','Extrayendo puntos clave...','Evaluando aplicación práctica...','Generando análisis...'];
   let p = 0, mi = 0;
   const iv = safeInterval(() => {
@@ -4700,20 +4769,20 @@ function analizarIA() {
       if (!j.analisis) j.analisis = a;
       el.innerHTML = `<div class="ai-result-box">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
-          <div><div style="font-size:13px;font-weight:700;color:var(--fg)">${j.t}</div><div style="font-size:11px;color:var(--fg3);margin-top:4px">${j.fu} · ${j.f}</div></div>
+          <div><div style="font-size:13px;font-weight:700;color:var(--fg)">${escapeHtml(j.t)}</div><div style="font-size:11px;color:var(--fg3);margin-top:4px">${escapeHtml(j.fu)} · ${escapeHtml(j.f)}</div></div>
           <button class="fav-btn${j.fav ? ' on' : ''}" onclick="toggleFav(${j.id},this)">⭐</button>
         </div>
         <div class="ai-section" style="background:var(--card-hover);border-radius:var(--radius);padding:14px">
           <div class="ai-section-title">📋 Resumen en lenguaje claro</div>
-          <div style="font-size:12px;line-height:1.7;color:var(--fg)">${a.resumen}</div>
+          <div style="font-size:12px;line-height:1.7;color:var(--fg)">${escapeHtml(a.resumen)}</div>
         </div>
         <div class="ai-section" style="margin-top:14px">
           <div class="ai-section-title">🔑 Puntos clave</div>
-          ${a.puntos.map(pt => `<div class="ai-point"><div class="ai-point-dot"></div><span>${pt}</span></div>`).join('')}
+          ${a.puntos.map(pt => `<div class="ai-point"><div class="ai-point-dot"></div><span>${escapeHtml(pt)}</span></div>`).join('')}
         </div>
         <div class="ai-grid">
-          <div class="ai-cell"><div class="ai-cell-title" style="color:var(--green)">✅ Aplicación práctica</div><div style="font-size:12px;line-height:1.6;color:var(--fg)">${a.aplicacion}</div></div>
-          <div class="ai-cell"><div class="ai-cell-title" style="color:var(--amber)">⚠ Importancia procesal</div><div style="font-size:12px;line-height:1.6;color:var(--fg)">${a.importancia}</div></div>
+          <div class="ai-cell"><div class="ai-cell-title" style="color:var(--green)">✅ Aplicación práctica</div><div style="font-size:12px;line-height:1.6;color:var(--fg)">${escapeHtml(a.aplicacion)}</div></div>
+          <div class="ai-cell"><div class="ai-cell-title" style="color:var(--amber)">⚠ Importancia procesal</div><div style="font-size:12px;line-height:1.6;color:var(--fg)">${escapeHtml(a.importancia)}</div></div>
         </div>
         <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
           <button class="btn btn-accent btn-sm" onclick="usarSentenciaById(${j.id})">📄 Usar</button>
@@ -4750,7 +4819,7 @@ function marcarTodasLeidas() { JALERTS_GLOBAL.forEach(a => a.leida = true); rend
 
 function populateVinSel() {
   const sel = document.getElementById('vin-j'); if (!sel) return;
-  sel.innerHTML = getJuris().map(j => `<option value="${j.id}">${j.t}</option>`).join('');
+  sel.innerHTML = getJuris().map(j => `<option value="${j.id}">${escapeHtml(j.t)}</option>`).join('');
 }
 
 function crearVinculo() {
@@ -4770,16 +4839,16 @@ function renderVinculos() {
     ? vinculos.map((v, i) => `
         <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:15px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;gap:14px">
           <div style="flex:1">
-            <div style="font-size:12px;font-weight:700;color:var(--fg);margin-bottom:7px;line-height:1.4">${v.titulo}</div>
-            <span class="vchip">🔗 ${v.proc}</span>
-            <span style="font-size:10px;color:var(--fg3);margin-left:9px">${v.fecha}</span>
+            <div style="font-size:12px;font-weight:700;color:var(--fg);margin-bottom:7px;line-height:1.4">${escapeHtml(v.titulo)}</div>
+            <span class="vchip">🔗 ${escapeHtml(v.proc)}</span>
+            <span style="font-size:10px;color:var(--fg3);margin-left:9px">${escapeHtml(v.fecha)}</span>
           </div>
           ${can('write') ? `<button class="btn btn-ghost btn-sm" onclick="vinculos_del(${i})">✕</button>` : ''}
         </div>`).join('')
     : '<div style="color:var(--fg3);font-size:13px;padding:18px 0">No hay vínculos creados aún.</div>';
 }
 
-function vinculos_del(i) { getVinculos().splice(i, 1); renderVinculos(); toast('Vínculo eliminado', 'ok'); }
+function vinculos_del(i) { if (!can('write')) { toast('Sin permiso', 'err'); return; } getVinculos().splice(i, 1); renderVinculos(); toast('Vínculo eliminado', 'ok'); }
 
 function renderVSug() {
   const juris = getJuris(); const el = document.getElementById('vsug-list'); if (!el) return;
@@ -4790,8 +4859,8 @@ function renderVSug() {
     <div class="vsug-card">
       <div style="flex:1">
         <div style="font-size:10px;color:var(--fg3);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px">Sugerencia IA</div>
-        <div style="font-size:12px;font-weight:700;color:var(--fg);margin-bottom:7px;line-height:1.4">${s.jt}</div>
-        <span class="vchip">🔗 ${s.proc}</span>
+        <div style="font-size:12px;font-weight:700;color:var(--fg);margin-bottom:7px;line-height:1.4">${escapeHtml(s.jt)}</div>
+        <span class="vchip">🔗 ${escapeHtml(s.proc)}</span>
       </div>
       <div style="text-align:center;flex-shrink:0">
         <div class="vscore">${s.score}%</div>
@@ -4813,10 +4882,11 @@ function aplicarSug(jid, proc, btn) {
 
 function populateNotasSel() {
   const sel = document.getElementById('nota-sel'); if (!sel) return;
-  sel.innerHTML = getJuris().map(j => `<option value="${j.id}">${j.t}</option>`).join('');
+  sel.innerHTML = getJuris().map(j => `<option value="${j.id}">${escapeHtml(j.t)}</option>`).join('');
 }
 
 function guardarNota() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const id  = parseInt(document.getElementById('nota-sel').value);
   const txt = document.getElementById('nota-txt').value.trim();
   if (!txt) { toast('Escribe una nota primero', 'err'); return; }
@@ -4838,10 +4908,10 @@ function renderNotas() {
   el.innerHTML = all.length
     ? all.map(n => `
         <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:15px;margin-bottom:9px">
-          <div style="font-size:11px;font-weight:700;color:var(--fg2);margin-bottom:7px;line-height:1.3">${n.titulo}</div>
-          <p style="font-size:12.5px;line-height:1.65;color:var(--fg)">${n.txt}</p>
+          <div style="font-size:11px;font-weight:700;color:var(--fg2);margin-bottom:7px;line-height:1.3">${escapeHtml(n.titulo)}</div>
+          <p style="font-size:12.5px;line-height:1.65;color:var(--fg)">${escapeHtml(n.txt)}</p>
           <div style="font-size:10px;color:var(--fg3);margin-top:9px;display:flex;justify-content:space-between;align-items:center">
-            <span>${n.fecha} · ${n.usuario}</span>
+            <span>${escapeHtml(n.fecha)} · ${escapeHtml(n.usuario)}</span>
             <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:10px" onclick="elimNota(${n.jid},${n.idx})">Eliminar</button>
           </div>
         </div>`).join('')
@@ -4849,6 +4919,7 @@ function renderNotas() {
 }
 
 function elimNota(id, idx) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const notasDB = getNotas();
   if (notasDB[id]) { notasDB[id].splice(idx, 1); updateJBadges(); renderNotas(); toast('Nota eliminada', 'ok'); }
 }
@@ -4863,9 +4934,9 @@ function abrirNotaRapida(id) {
   document.getElementById('nota-rapida-existentes').innerHTML = existing.length
     ? existing.map((n, i) => `
         <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:10px 13px;margin-bottom:7px">
-          <div style="font-size:12px;line-height:1.6;color:var(--fg)">${n.txt}</div>
+          <div style="font-size:12px;line-height:1.6;color:var(--fg)">${escapeHtml(n.txt)}</div>
           <div style="font-size:10px;color:var(--fg3);margin-top:4px;display:flex;justify-content:space-between">
-            <span>${n.fecha} · ${n.usuario}</span>
+            <span>${escapeHtml(n.fecha)} · ${escapeHtml(n.usuario)}</span>
             <button class="btn btn-ghost btn-sm" style="padding:1px 6px;font-size:10px" onclick="elimNota(${id},${i});abrirNotaRapida(${id})">✕</button>
           </div>
         </div>`).join('')
@@ -4875,6 +4946,7 @@ function abrirNotaRapida(id) {
 }
 
 function guardarNotaRapida() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const id  = window._notaRapidaId;
   const txt = document.getElementById('nota-rapida-txt').value.trim();
   if (!txt) { toast('Escribe una nota primero', 'err'); return; }
@@ -4966,7 +5038,7 @@ function generarDoc(tipo) {
       el.innerHTML = `
         <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px">
           <div style="font-size:10px;font-weight:700;color:var(--fg2);text-transform:uppercase;letter-spacing:.07em;margin-bottom:12px">${tipo === 'argumento' ? 'Argumento legal' : 'Escrito jurídico'}</div>
-          <pre id="doc-pre" style="font-size:11.5px;white-space:pre-wrap;line-height:1.9;color:var(--fg);font-family:inherit;max-height:290px;overflow-y:auto">${txt}</pre>
+          <pre id="doc-pre" style="font-size:11.5px;white-space:pre-wrap;line-height:1.9;color:var(--fg);font-family:inherit;max-height:290px;overflow-y:auto">${escapeHtml(txt)}</pre>
           <div style="margin-top:14px;display:flex;gap:8px">
             <button class="btn btn-green btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('doc-pre').textContent).then(()=>toast('Copiado','ok'))">📋 Copiar</button>
             <button class="btn btn-accent btn-sm" onclick="toast('Exportado .docx (simulado)','ok')">↓ Exportar .docx</button>
@@ -5079,10 +5151,10 @@ function renderAdminPage() {
     const esSelf = u.id === SESSION.id;
     return `
       <div class="user-row">
-        <div class="user-row-avatar" style="background:${clr}28;color:${clr}">${u.avatar}</div>
+        <div class="user-row-avatar" style="background:${clr}28;color:${clr}">${escapeHtml(u.avatar)}</div>
         <div class="user-row-info">
-          <div class="user-row-name">${u.nombre} ${esSelf ? '<span style="font-size:10px;color:var(--fg3)">(tú)</span>' : ''}</div>
-          <div class="user-row-sub">${u.email}</div>
+          <div class="user-row-name">${escapeHtml(u.nombre)} ${esSelf ? '<span style="font-size:10px;color:var(--fg3)">(tú)</span>' : ''}</div>
+          <div class="user-row-sub">${escapeHtml(u.email)}</div>
         </div>
         <span class="user-role-badge role-${u.rol}" style="margin-right:9px">${u.rol}</span>
         <span class="badge" style="background:${u.activo ? 'rgba(52,211,153,.12)' : 'rgba(248,113,113,.12)'};color:${u.activo ? 'var(--green)' : 'var(--red)'}">${u.activo ? 'Activo' : 'Inactivo'}</span>
@@ -5094,12 +5166,14 @@ function renderAdminPage() {
 }
 
 function cambiarRol(uid) {
+  if (!can('manageUsers')) { toast('Sin permiso', 'err'); return; }
   const u = DB_USUARIOS.find(x => x.id === uid); if (!u) return;
   const roles = ['admin','abogado','paralegal'];
   u.rol = roles[(roles.indexOf(u.rol) + 1) % roles.length];
   renderAdminPage(); toast(`Rol de ${u.nombre.split(' ')[0]} cambiado a ${u.rol}`, 'ok');
 }
 function toggleActivo(uid) {
+  if (!can('manageUsers')) { toast('Sin permiso', 'err'); return; }
   const u = DB_USUARIOS.find(x => x.id === uid); if (!u) return;
   u.activo = !u.activo; renderAdminPage(); toast(`Usuario ${u.activo ? 'activado' : 'desactivado'}`, 'ok');
 }
@@ -5128,7 +5202,7 @@ function crearUsuario() {
 function renderSABar() {
   const btns = document.getElementById('sa-empresa-btns');
   btns.innerHTML = Object.values(DB_EMPRESAS).map(e =>
-    `<button class="sa-empresa-btn${window._saViewEmpresa === e.id ? ' active' : ''}" onclick="saChangeEmpresa('${e.id}')">${e.nombre}</button>`
+    `<button class="sa-empresa-btn${window._saViewEmpresa === e.id ? ' active' : ''}" onclick="saChangeEmpresa('${e.id}')">${escapeHtml(e.nombre)}</button>`
   ).join('');
 }
 
@@ -5176,7 +5250,7 @@ function renderSuperAdminPage() {
     return `
       <div class="sa-empresa-row">
         <div style="flex:1">
-          <div style="font-size:13px;font-weight:700;color:var(--fg);margin-bottom:3px">${e.nombre}</div>
+          <div style="font-size:13px;font-weight:700;color:var(--fg);margin-bottom:3px">${escapeHtml(e.nombre)}</div>
           <div style="font-size:11px;color:var(--fg3)">${uc} usuarios · ${jc} sentencias</div>
         </div>
         <span class="plan-badge plan-${e.plan}">${e.plan}</span>
@@ -5191,10 +5265,10 @@ function renderSuperAdminPage() {
     const empresa= DB_EMPRESAS[u.empresaId];
     return `
       <div class="user-row" style="padding:8px 0">
-        <div class="user-row-avatar" style="background:${clr}28;color:${clr};width:30px;height:30px;font-size:11px">${u.avatar}</div>
+        <div class="user-row-avatar" style="background:${clr}28;color:${clr};width:30px;height:30px;font-size:11px">${escapeHtml(u.avatar)}</div>
         <div class="user-row-info" style="flex:1">
-          <div class="user-row-name" style="font-size:12px">${u.nombre}</div>
-          <div class="user-row-sub" style="font-size:10px">${empresa?.nombre || 'Sin empresa'}</div>
+          <div class="user-row-name" style="font-size:12px">${escapeHtml(u.nombre)}</div>
+          <div class="user-row-sub" style="font-size:10px">${escapeHtml(empresa?.nombre || 'Sin empresa')}</div>
         </div>
         <span class="user-role-badge role-${u.rol}" style="font-size:9px">${u.rol}</span>
         <span class="badge" style="background:${u.activo ? 'rgba(52,211,153,.12)' : 'rgba(248,113,113,.12)'};color:${u.activo ? 'var(--green)' : 'var(--red)'};font-size:9px;margin-left:6px">${u.activo ? '●' : '○'}</span>
@@ -5204,7 +5278,7 @@ function renderSuperAdminPage() {
 
   const sel = document.getElementById('sa-empresa-sel');
   if (sel) {
-    sel.innerHTML = Object.values(DB_EMPRESAS).map(e => `<option value="${e.id}">${e.nombre}</option>`).join('');
+    sel.innerHTML = Object.values(DB_EMPRESAS).map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('');
     sel.value     = window._saViewEmpresa || 'e1';
   }
   const vn = document.getElementById('sa-viewing-name');
@@ -5228,6 +5302,7 @@ function renderSAQuickActions(eid) {
 }
 
 function saEliminarEmpresa(eid) {
+  if (!isSuperAdmin()) { toast('Sin permiso', 'err'); return; }
   const e = DB_EMPRESAS[eid]; if (!e) { toast('Empresa no encontrada', 'err'); return; }
   const uc = DB_USUARIOS.filter(u => u.empresaId === eid).length;
   if (!confirm(`¿Eliminar la empresa "${e.nombre}"?\n\nEsto eliminará también ${uc} usuarios y todos sus datos.\n\nEsta acción no se puede deshacer.`)) return;
@@ -5239,6 +5314,7 @@ function saEliminarEmpresa(eid) {
 }
 
 function saEliminarUsuario(uid) {
+  if (!isSuperAdmin()) { toast('Sin permiso', 'err'); return; }
   const u = DB_USUARIOS.find(x => x.id === uid); if (!u) return;
   if (!confirm(`¿Eliminar al usuario "${u.nombre}" (${u.email})?`)) return;
   DB_USUARIOS.splice(DB_USUARIOS.indexOf(u), 1);
@@ -5246,6 +5322,7 @@ function saEliminarUsuario(uid) {
 }
 
 function saCrearEmpresa() {
+  if (!isSuperAdmin()) { toast('Sin permiso', 'err'); return; }
   const nombre = document.getElementById('ne-nombre').value.trim();
   const plan   = document.getElementById('ne-plan').value;
   const err    = document.getElementById('newempresa-err');
@@ -5352,7 +5429,7 @@ async function _supaInsertConsulta(c) {
 
 /* Leer todas las consultas desde Supabase (autenticado) */
 async function _supaGetConsultas() {
-  if (!_supa) return [];
+  if (!_supa || !can('write')) return [];
   try {
     const { data, error } = await _supa.from('consultas').select('*').order('fecha_creacion', { ascending: false });
     if (error) { console.warn('[NEXLEX] Supabase select error:', error.message); return []; }
@@ -5370,7 +5447,7 @@ async function _supaGetConsultas() {
 
 /* Actualizar campos de una consulta en Supabase */
 async function _supaUpdateConsulta(id, fields) {
-  if (!_supa) return;
+  if (!_supa || !can('write')) return;
   try {
     const row = {};
     if (fields.estadoInterno !== undefined) row.estado = fields.estadoInterno;
@@ -5388,7 +5465,7 @@ async function _supaUpdateConsulta(id, fields) {
 async function _supaFindByCodigo(codigo) {
   if (!_supa) return null;
   try {
-    const { data, error } = await _supa.from('consultas').select('*').eq('id', codigo.toUpperCase()).maybeSingle();
+    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,provincia,nombre,estado,abogado_asignado,fecha_creacion').eq('id', codigo.toUpperCase()).maybeSingle();
     if (error || !data) return null;
     return _rowToConsulta(data);
   } catch(e) { return null; }
@@ -5396,7 +5473,7 @@ async function _supaFindByCodigo(codigo) {
 
 /* Eliminar consulta de Supabase */
 async function _supaDeleteConsulta(id) {
-  if (!_supa) return;
+  if (!_supa || !can('write')) return;
   try {
     const { error } = await _supa.from('consultas').delete().eq('id', id);
     if (error) console.warn('[NEXLEX] Supabase delete error:', error.message);
@@ -5438,7 +5515,7 @@ function normalizeConsulta(c) {
     fechaRespuesta: c?.fechaRespuesta || '',
   };
 }
-function isConnectPrivateMode() { return !!SESSION; }
+function isConnectPrivateMode() { return !!SESSION && can('write'); }
 function applyConnectVisibility() {
   const privateMode = isConnectPrivateMode();
   document.body.classList.toggle('connect-public-mode', !privateMode && document.getElementById('page-connect')?.classList.contains('active'));
@@ -5606,9 +5683,29 @@ function updateCharCount() {
 }
 
 /* ── Manejo de archivos ── */
+function validateConnectFile(file) {
+  const MAX_MB = 10;
+  const allowed = {
+    pdf:  ['application/pdf'],
+    doc:  ['application/msword'],
+    docx: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    jpg:  ['image/jpeg'],
+    jpeg: ['image/jpeg'],
+    png:  ['image/png'],
+  };
+  const name = String(file?.name || '');
+  const ext = name.includes('.') ? name.split('.').pop().toLowerCase() : '';
+  if (!file || file.size <= 0) { toast('El archivo está vacío o no es válido', 'err'); return false; }
+  if (file.size > MAX_MB * 1024 * 1024) { toast('El archivo supera los 10MB', 'err'); return false; }
+  if (!allowed[ext]) { toast('Tipo de archivo no permitido. Usa PDF, DOC, DOCX, JPG o PNG', 'err'); return false; }
+  if (file.type && !allowed[ext].includes(file.type.toLowerCase())) { toast('El tipo real del archivo no coincide con su extensión', 'err'); return false; }
+  return true;
+}
+
 function handleFileSelect(input) {
   const file = input.files?.[0];
   if (!file) return;
+  if (!validateConnectFile(file)) { input.value = ''; _connectFile = null; return; }
   _connectFile = file;
   updateDropZone(file);
 }
@@ -5618,6 +5715,7 @@ function handleFileDrop(e) {
   document.getElementById('cn-dropzone').classList.remove('dragging');
   const file = e.dataTransfer?.files?.[0];
   if (!file) return;
+  if (!validateConnectFile(file)) { _connectFile = null; return; }
   _connectFile = file;
   updateDropZone(file);
 }
@@ -5644,8 +5742,10 @@ function updateDropZone(file) {
 /* ── Generar código de referencia ── */
 function genRef() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const values = new Uint32Array(6);
+  crypto.getRandomValues(values);
   let r = 'NX-';
-  for (let i = 0; i < 6; i++) r += chars[Math.floor(Math.random() * chars.length)];
+  for (let i = 0; i < values.length; i++) r += chars[values[i] % chars.length];
   return r;
 }
 
@@ -5816,15 +5916,18 @@ function renderInbox() {
     el.innerHTML = filtered.map(raw => {
       const c = normalizeConsulta(raw); const estadoKey = normalizeConnectEstado(c.estadoInterno || c.estado); const icon = AREA_ICONS[c.tipo] || 'Caso'; const eBadge = `estado-badge-${estadoKey}`; const eLabel = getConnectEstadoLabel(estadoKey);
       const contactLine = [c.contactos?.tel ? `Tel. ${escapeHtml(c.contactos.tel)}` : '', c.contactos?.wa ? `WhatsApp ${escapeHtml(c.contactos.wa)}` : '', c.contactos?.email ? `Email ${escapeHtml(c.contactos.email)}` : ''].filter(Boolean).join(' · ');
-      return `<div class="inbox-card estado-${estadoKey} ${!c.leida ? 'no-leida' : ''}" id="inbox-card-${c.id}"><div class="inbox-top"><div><div class="inbox-title">${icon} ${escapeHtml(c.tipo)} &middot; ${escapeHtml(c.provincia)} ${!c.leida ? '<span class="crm-notif-pill">No leída</span>' : ''}</div><div class="inbox-ref">Ref: ${escapeHtml(c.id)} &middot; ${escapeHtml(c.fecha)}</div></div><span class="badge ${eBadge}" style="font-size:10px;padding:3px 10px">${eLabel}</span></div><div class="inbox-meta">${c.anonima ? '<span>Anónima</span>' : `<span>${escapeHtml(c.nombre)}</span>`}<span>${escapeHtml(c.horario||'')}</span>${c.archivo ? `<span>Adjunto ${escapeHtml(c.archivo)}</span>` : ''}</div><div class="crm-date-grid"><span>Recepción: ${formatCRMDate(c.fechaRecepcion)}</span><span>Lectura: ${formatCRMDate(c.fechaLectura)}</span><span>Respuesta: ${formatCRMDate(c.fechaRespuesta)}</span></div><div class="crm-assignment-box"><div class="crm-assignment-item"><div class="crm-assignment-label">Abogado asignado</div><div class="crm-assignment-value">${escapeHtml(c.abogadoAsignado || 'Sin asignar')}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Fecha asignación</div><div class="crm-assignment-value">${c.fechaAsignacion ? escapeHtml(c.fechaAsignacion) : 'Pendiente'}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Estado actual</div><div class="crm-assignment-value">${eLabel}</div></div></div><div class="inbox-desc">${escapeHtml(c.descripcion)}</div>${contactLine ? `<div class="inbox-contact">${contactLine}</div>` : ''}<div class="inbox-actions"><select class="crm-select" onchange="cambiarEstadoInbox('${c.id}',this.value)">${renderEstadoOptions(estadoKey)}</select><button class="btn btn-accent btn-sm" onclick="asignarmeCaso('${c.id}')">Asignarme</button><select class="crm-select" id="reassign-${c.id}">${getLawyerOptionsHtml(c.abogadoAsignado)}</select><button class="btn btn-ghost btn-sm" onclick="reasignarCaso('${c.id}')">Reasignar</button>${!c.leida ? `<button class="btn btn-ghost btn-sm" onclick="marcarConsultaLeida('${c.id}')">Marcar leída</button>` : ''}${estadoKey === 'contratado' && !c.convertidaEnCaso ? `<button class="btn btn-sm" style="background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3);font-weight:700" onclick="convertirConsultaEnCaso('${c.id}')">📁 Convertir en caso</button>` : ''}${c.convertidaEnCaso ? `<span style="font-size:10px;color:var(--green);font-weight:700">✓ Caso ${escapeHtml(c.casoId||'')} creado</span>` : ''}${c.contactos?.wa ? `<a href="https://wa.me/${c.contactos.wa.replace(/\D/g,'')}" target="_blank" class="btn btn-green btn-sm">WhatsApp</a>` : ''}${c.contactos?.tel ? `<a href="tel:${escapeHtml(c.contactos.tel)}" class="btn btn-ghost btn-sm">Llamar</a>` : ''}${c.contactos?.email ? `<a href="mailto:${escapeHtml(c.contactos.email)}" class="btn btn-ghost btn-sm">Email</a>` : ''}<button class="btn btn-danger btn-sm" onclick="eliminarDeInbox('${c.id}')">Eliminar</button></div></div>`;
+      return `<div class="inbox-card estado-${estadoKey} ${!c.leida ? 'no-leida' : ''}" id="inbox-card-${c.id}"><div class="inbox-top"><div><div class="inbox-title">${icon} ${escapeHtml(c.tipo)} &middot; ${escapeHtml(c.provincia)} ${!c.leida ? '<span class="crm-notif-pill">No leída</span>' : ''}</div><div class="inbox-ref">Ref: ${escapeHtml(c.id)} &middot; ${escapeHtml(c.fecha)}</div></div><span class="badge ${eBadge}" style="font-size:10px;padding:3px 10px">${eLabel}</span></div><div class="inbox-meta">${c.anonima ? '<span>Anónima</span>' : `<span>${escapeHtml(c.nombre)}</span>`}<span>${escapeHtml(c.horario||'')}</span>${c.archivo ? `<span>Adjunto ${escapeHtml(c.archivo)}</span>` : ''}</div><div class="crm-date-grid"><span>Recepción: ${formatCRMDate(c.fechaRecepcion)}</span><span>Lectura: ${formatCRMDate(c.fechaLectura)}</span><span>Respuesta: ${formatCRMDate(c.fechaRespuesta)}</span></div><div class="crm-assignment-box"><div class="crm-assignment-item"><div class="crm-assignment-label">Abogado asignado</div><div class="crm-assignment-value">${escapeHtml(c.abogadoAsignado || 'Sin asignar')}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Fecha asignación</div><div class="crm-assignment-value">${c.fechaAsignacion ? escapeHtml(c.fechaAsignacion) : 'Pendiente'}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Estado actual</div><div class="crm-assignment-value">${eLabel}</div></div></div><div class="inbox-desc">${escapeHtml(c.descripcion)}</div>${contactLine ? `<div class="inbox-contact">${contactLine}</div>` : ''}<div class="inbox-actions"><select class="crm-select" onchange="cambiarEstadoInbox('${c.id}',this.value)">${renderEstadoOptions(estadoKey)}</select><button class="btn btn-accent btn-sm" onclick="asignarmeCaso('${c.id}')">Asignarme</button><select class="crm-select" id="reassign-${c.id}">${getLawyerOptionsHtml(c.abogadoAsignado)}</select><button class="btn btn-ghost btn-sm" onclick="reasignarCaso('${c.id}')">Reasignar</button>${!c.leida ? `<button class="btn btn-ghost btn-sm" onclick="marcarConsultaLeida('${c.id}')">Marcar leída</button>` : ''}${estadoKey === 'contratado' && !c.convertidaEnCaso ? `<button class="btn btn-sm" style="background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3);font-weight:700" onclick="convertirConsultaEnCaso('${c.id}')">📁 Convertir en caso</button>` : ''}${c.convertidaEnCaso ? `<span style="font-size:10px;color:var(--green);font-weight:700">✓ Caso ${escapeHtml(c.casoId||'')} creado</span>` : ''}${c.contactos?.wa ? `<a href="https://wa.me/${c.contactos.wa.replace(/\D/g,'')}" target="_blank" rel="noopener noreferrer" class="btn btn-green btn-sm">WhatsApp</a>` : ''}${c.contactos?.tel ? `<a href="tel:${escapeHtml(c.contactos.tel)}" class="btn btn-ghost btn-sm">Llamar</a>` : ''}${c.contactos?.email ? `<a href="mailto:${escapeHtml(c.contactos.email)}" class="btn btn-ghost btn-sm">Email</a>` : ''}<button class="btn btn-danger btn-sm" onclick="eliminarDeInbox('${c.id}')">Eliminar</button></div></div>`;
     }).join('');
   });
 }
 
 function cambiarEstadoInbox(id, nuevoEstado) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
+  const estadoSeguro = normalizeConnectEstado(nuevoEstado);
+  if (!CONNECT_ESTADO_LABELS[estadoSeguro]) { toast('Estado no válido', 'err'); return; }
   const list = getInboxConsultas(); const item = list.find(c => c.id === id);
   if (item) {
-    item.estadoInterno = normalizeConnectEstado(nuevoEstado); item.estado = item.estadoInterno;
+    item.estadoInterno = estadoSeguro; item.estado = item.estadoInterno;
     item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString();
     if (item.estadoInterno === 'respuesta_emitida' && !item.fechaRespuesta) item.fechaRespuesta = new Date().toISOString();
     try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {}
@@ -5832,10 +5935,12 @@ function cambiarEstadoInbox(id, nuevoEstado) {
     syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); toast(`Estado actualizado: ${getConnectEstadoLabel(item.estadoInterno)}`, 'ok');
   }
 }
-function asignarCaso(id, abogado) { const nombre = (abogado || '').trim(); if (!nombre) { toast('Selecciona un abogado', 'err'); return; } const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.abogadoAsignado = nombre; item.fechaAsignacion = getTodayDO(); item.estadoInterno = 'asignado'; item.estado = 'asignado'; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {} _supaUpdateConsulta(id, { estadoInterno: 'asignado', abogadoAsignado: nombre, leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); toast(`Caso asignado a ${nombre}`, 'ok'); }
+function asignarCaso(id, abogado) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; } const nombre = (abogado || '').trim(); if (!nombre) { toast('Selecciona un abogado', 'err'); return; } const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.abogadoAsignado = nombre; item.fechaAsignacion = getTodayDO(); item.estadoInterno = 'asignado'; item.estado = 'asignado'; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {} _supaUpdateConsulta(id, { estadoInterno: 'asignado', abogadoAsignado: nombre, leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); toast(`Caso asignado a ${nombre}`, 'ok'); }
 function asignarmeCaso(id) { asignarCaso(id, getCurrentLawyerName()); }
 function reasignarCaso(id) { const sel = document.getElementById('reassign-' + id) || document.getElementById('page-reassign-' + id); asignarCaso(id, sel?.value || ''); }
-function marcarConsultaLeida(id) { const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {} _supaUpdateConsulta(id, { leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); }
+function marcarConsultaLeida(id) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; } const list = getInboxConsultas(); const item = list.find(c => c.id === id); if (!item) return; item.leida = true; item.noLeida = false; if (!item.fechaLectura) item.fechaLectura = new Date().toISOString(); try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {} _supaUpdateConsulta(id, { leida: true }); syncConsultaFromInbox(item); updateInboxBadge(); renderInbox(); if (document.getElementById('inbox-page-list')) renderInboxPage(); }
 function buildTimeline(c) { c = normalizeConsulta(c); const estado = normalizeConnectEstado(c.estadoInterno || c.estado); const idx = CONNECT_ESTADOS.findIndex(e => e.key === estado); return CONNECT_ESTADOS.map((step, i) => { const done = i <= idx; const current = i === idx; let title = step.label; let sub = ''; if (step.key === 'asignado') { title = c.abogadoAsignado && c.abogadoAsignado !== 'Sin asignar' ? `Asignado a ${escapeHtml(c.abogadoAsignado)}` : 'Asignado'; sub = c.fechaAsignacion ? `Fecha de asignación: ${escapeHtml(c.fechaAsignacion)}` : 'Pendiente de asignación'; } return `<div class="legal-step ${done ? 'done' : ''} ${current ? 'current' : ''}"><div class="legal-dot">${done ? '&#10003;' : '&#9633;'}</div><div><div class="legal-step-title">${title}</div>${sub ? `<div class="legal-step-sub">${sub}</div>` : ''}</div></div>`; }).join(''); }
 function buscarConsultaPorCodigo() {
   const code = document.getElementById('track-code')?.value.trim().toUpperCase();
@@ -5862,6 +5967,7 @@ function _renderTrackResult(out, found) {
 }
 
 function eliminarDeInbox(id) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (!confirm('¿Eliminar este caso de la bandeja?')) return;
   let list = getInboxConsultas().filter(c => c.id !== id);
   try { _storage.setItem(INBOX_KEY, JSON.stringify(list)); } catch {}
@@ -5906,9 +6012,14 @@ function showClienteSug(q) {
   const matches = getClientesHist().filter(n => n.toLowerCase().includes(q.toLowerCase())).slice(0, 8);
   if (!matches.length) { box.style.display = 'none'; return; }
   box.style.display = 'block';
-  box.innerHTML = matches.map(n =>
-    `<div class="cliente-sug-item" onmousedown="selectClienteSug('${n.replace(/'/g,"\\'")}')">👤 ${n}</div>`
-  ).join('');
+  box.innerHTML = '';
+  matches.forEach(n => {
+    const item = document.createElement('div');
+    item.className = 'cliente-sug-item';
+    item.textContent = `👤 ${n}`;
+    item.addEventListener('mousedown', () => selectClienteSug(n));
+    box.appendChild(item);
+  });
 }
 
 function selectClienteSug(nombre) {
@@ -6019,7 +6130,7 @@ function renderInboxPage() {
   if (!list.length) { if (noEl) noEl.style.display = ''; listEl.innerHTML = ''; return; } if (noEl) noEl.style.display = 'none';
   const stColors = { consulta_recibida:'var(--green)', asignado:'#22d3ee', en_analisis:'var(--brand)', respuesta_emitida:'var(--amber)', contratado:'var(--orange)', cerrado:'var(--fg3)' };
   listEl.innerHTML = list.map(raw => { const c = normalizeConsulta(raw); const estadoKey = normalizeConnectEstado(c.estadoInterno || c.estado); const icon = AREA_ICONS[c.tipo] || '??'; const sc = stColors[estadoKey] || 'var(--fg3)'; const sl = getConnectEstadoLabel(estadoKey); const cLine = [c.contactos?.tel ? `Tel. ${escapeHtml(c.contactos.tel)}` : '', c.contactos?.wa ? `WhatsApp ${escapeHtml(c.contactos.wa)}` : '', c.contactos?.email ? `Email ${escapeHtml(c.contactos.email)}` : ''].filter(Boolean).join(' ? ');
-    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px;margin-bottom:12px;border-left:4px solid ${sc}"><div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap"><div style="width:44px;height:44px;border-radius:var(--radius);background:rgba(79,124,255,.1);border:1px solid var(--brand-line);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">${icon}</div><div style="flex:1;min-width:200px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px"><span style="font-size:13px;font-weight:700;color:var(--fg)">${escapeHtml(c.tipo)} &middot; ${escapeHtml(c.provincia)}</span><span style="font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;background:${sc}22;color:${sc};border:1px solid ${sc}44">${sl}</span>${c.anonima ? '<span style="font-size:10px;color:var(--fg3)">Anónimo</span>' : ''}</div>${!c.leida ? '<span class="crm-notif-pill">No leída</span>' : ''}<div class="crm-date-grid"><span>Recepción: ${formatCRMDate(c.fechaRecepcion)}</span><span>Lectura: ${formatCRMDate(c.fechaLectura)}</span><span>Respuesta: ${formatCRMDate(c.fechaRespuesta)}</span></div><div class="crm-assignment-box" style="margin:8px 0 10px"><div class="crm-assignment-item"><div class="crm-assignment-label">Abogado asignado</div><div class="crm-assignment-value">${escapeHtml(c.abogadoAsignado || 'Sin asignar')}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Fecha asignación</div><div class="crm-assignment-value">${c.fechaAsignacion ? escapeHtml(c.fechaAsignacion) : 'Pendiente'}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Estado actual</div><div class="crm-assignment-value">${sl}</div></div></div><div style="font-size:12px;color:var(--fg2);line-height:1.65;margin-bottom:8px">${escapeHtml(c.descripcion)}</div>${cLine ? `<div style="font-size:11px;color:var(--fg3);margin-bottom:8px">${cLine}</div>` : ''}<div style="font-size:10.5px;color:var(--fg3)">${escapeHtml(c.fecha)} &middot; Ref: <strong style="color:var(--brand)">${escapeHtml(c.id)}</strong>${c.archivo ? ` &middot; Adjunto ${escapeHtml(c.archivo)}` : ''}</div></div><div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;min-width:180px"><select class="crm-select" onchange="cambiarEstadoInbox('${c.id}', this.value)">${renderEstadoOptions(estadoKey)}</select><button class="btn btn-accent btn-sm" onclick="asignarmeCaso('${c.id}')">Asignarme</button><select class="crm-select" id="page-reassign-${c.id}">${getLawyerOptionsHtml(c.abogadoAsignado)}</select><button class="btn btn-ghost btn-sm" onclick="reasignarCaso('${c.id}')">Reasignar</button>${estadoKey === 'contratado' && !c.convertidaEnCaso ? `<button class="btn btn-sm" style="background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3);font-weight:700" onclick="convertirConsultaEnCaso('${c.id}')">📁 Convertir en caso</button>` : ''}${c.convertidaEnCaso ? `<span style="font-size:10px;color:var(--green);font-weight:700">✓ Caso ${escapeHtml(c.casoId||'')} creado</span>` : ''}${c.contactos?.wa ? `<a href="https://wa.me/${c.contactos.wa.replace(/\D/g,'')}" target="_blank" class="btn btn-green btn-sm">WhatsApp</a>` : ''}${c.contactos?.tel ? `<a href="tel:${escapeHtml(c.contactos.tel)}" class="btn btn-ghost btn-sm">Llamar</a>` : ''}${c.contactos?.email ? `<a href="mailto:${escapeHtml(c.contactos.email)}" class="btn btn-ghost btn-sm">Email</a>` : ''}<button class="btn btn-danger btn-sm" onclick="eliminarDeInbox('${c.id}');renderInboxPage()">Eliminar</button></div></div></div>`; }).join('');
+    return `<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);padding:18px;margin-bottom:12px;border-left:4px solid ${sc}"><div style="display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap"><div style="width:44px;height:44px;border-radius:var(--radius);background:rgba(79,124,255,.1);border:1px solid var(--brand-line);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">${icon}</div><div style="flex:1;min-width:200px"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px"><span style="font-size:13px;font-weight:700;color:var(--fg)">${escapeHtml(c.tipo)} &middot; ${escapeHtml(c.provincia)}</span><span style="font-size:10px;font-weight:700;padding:2px 9px;border-radius:20px;background:${sc}22;color:${sc};border:1px solid ${sc}44">${sl}</span>${c.anonima ? '<span style="font-size:10px;color:var(--fg3)">Anónimo</span>' : ''}</div>${!c.leida ? '<span class="crm-notif-pill">No leída</span>' : ''}<div class="crm-date-grid"><span>Recepción: ${formatCRMDate(c.fechaRecepcion)}</span><span>Lectura: ${formatCRMDate(c.fechaLectura)}</span><span>Respuesta: ${formatCRMDate(c.fechaRespuesta)}</span></div><div class="crm-assignment-box" style="margin:8px 0 10px"><div class="crm-assignment-item"><div class="crm-assignment-label">Abogado asignado</div><div class="crm-assignment-value">${escapeHtml(c.abogadoAsignado || 'Sin asignar')}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Fecha asignación</div><div class="crm-assignment-value">${c.fechaAsignacion ? escapeHtml(c.fechaAsignacion) : 'Pendiente'}</div></div><div class="crm-assignment-item"><div class="crm-assignment-label">Estado actual</div><div class="crm-assignment-value">${sl}</div></div></div><div style="font-size:12px;color:var(--fg2);line-height:1.65;margin-bottom:8px">${escapeHtml(c.descripcion)}</div>${cLine ? `<div style="font-size:11px;color:var(--fg3);margin-bottom:8px">${cLine}</div>` : ''}<div style="font-size:10.5px;color:var(--fg3)">${escapeHtml(c.fecha)} &middot; Ref: <strong style="color:var(--brand)">${escapeHtml(c.id)}</strong>${c.archivo ? ` &middot; Adjunto ${escapeHtml(c.archivo)}` : ''}</div></div><div style="display:flex;flex-direction:column;gap:6px;flex-shrink:0;min-width:180px"><select class="crm-select" onchange="cambiarEstadoInbox('${c.id}', this.value)">${renderEstadoOptions(estadoKey)}</select><button class="btn btn-accent btn-sm" onclick="asignarmeCaso('${c.id}')">Asignarme</button><select class="crm-select" id="page-reassign-${c.id}">${getLawyerOptionsHtml(c.abogadoAsignado)}</select><button class="btn btn-ghost btn-sm" onclick="reasignarCaso('${c.id}')">Reasignar</button>${estadoKey === 'contratado' && !c.convertidaEnCaso ? `<button class="btn btn-sm" style="background:rgba(52,211,153,.12);color:var(--green);border:1px solid rgba(52,211,153,.3);font-weight:700" onclick="convertirConsultaEnCaso('${c.id}')">📁 Convertir en caso</button>` : ''}${c.convertidaEnCaso ? `<span style="font-size:10px;color:var(--green);font-weight:700">✓ Caso ${escapeHtml(c.casoId||'')} creado</span>` : ''}${c.contactos?.wa ? `<a href="https://wa.me/${c.contactos.wa.replace(/\D/g,'')}" target="_blank" rel="noopener noreferrer" class="btn btn-green btn-sm">WhatsApp</a>` : ''}${c.contactos?.tel ? `<a href="tel:${escapeHtml(c.contactos.tel)}" class="btn btn-ghost btn-sm">Llamar</a>` : ''}${c.contactos?.email ? `<a href="mailto:${escapeHtml(c.contactos.email)}" class="btn btn-ghost btn-sm">Email</a>` : ''}<button class="btn btn-danger btn-sm" onclick="eliminarDeInbox('${c.id}');renderInboxPage()">Eliminar</button></div></div></div>`; }).join('');
 }
 
 /* ── Modal conversación abogado ↔ cliente ── */
@@ -6058,6 +6169,7 @@ function renderConvThread(c) {
 }
 
 function enviarMensajeConv() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const input = document.getElementById('conv-input');
   const texto = input?.value.trim();
   if (!texto || !_convConsultaId) return;
@@ -6074,6 +6186,7 @@ function enviarMensajeConv() {
 }
 
 function guardarEstadoConv() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const sel = document.getElementById('conv-estado-sel');
   if (!sel || !_convConsultaId) return;
   cambiarEstadoInbox(_convConsultaId, sel.value);
@@ -6081,6 +6194,7 @@ function guardarEstadoConv() {
 }
 
 function limpiarInbox() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (!confirm('¿Eliminar TODAS las consultas de la bandeja? Esta acción no se puede deshacer.')) return;
   try { _storage.setItem(INBOX_KEY, '[]'); } catch {}
   updateInboxBadge();
@@ -6123,6 +6237,10 @@ function buildConsultaEmailPayload(consulta) {
 
 async function enviarNotificacionNuevaConsulta(consulta) {
   if (!NEXLEX_EMAIL_CONFIG.enabled) return;
+  if (['resend','webhook'].includes(NEXLEX_EMAIL_CONFIG.provider)) {
+    console.warn('[NEXLEX] Proveedor de correo bloqueado en frontend: requiere función backend/Edge para proteger secretos y endpoints.');
+    return;
+  }
   const payload = buildConsultaEmailPayload(consulta);
   try {
     if (NEXLEX_EMAIL_CONFIG.provider === 'formsubmit') {
@@ -6336,7 +6454,7 @@ function renderGestionDashboard() {
       ? recientes.map(c => {
           const cc = casos.filter(x=>x.clienteId===c.id);
           return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);cursor:pointer" onclick="openClienteWorkspace('${c.id}')">
-            <div style="width:32px;height:32px;border-radius:50%;background:var(--brand-glow);border:1px solid var(--brand-line);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--brand);flex-shrink:0">${(c.nombre||'?')[0].toUpperCase()}</div>
+            <div style="width:32px;height:32px;border-radius:50%;background:var(--brand-glow);border:1px solid var(--brand-line);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:var(--brand);flex-shrink:0">${escapeHtml((c.nombre||'?')[0].toUpperCase())}</div>
             <div style="flex:1;min-width:0">
               <div style="font-size:12px;font-weight:600;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(c.nombre)}</div>
               <div style="font-size:10px;color:var(--fg3)">${escapeHtml(c.id)} · ${cc.length} caso${cc.length!==1?'s':''}</div>
@@ -6514,6 +6632,7 @@ function renderGestionCasos() {
 
 /* ── Toggle favorito ── */
 function toggleFavoritoCliente(id) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const clientes = getGestionClientes();
   const c = clientes.find(x => x.id === id);
   if (!c) return;
@@ -6563,7 +6682,7 @@ function openClienteWorkspace(id) {
 
         <!-- Header del workspace -->
         <div style="padding:22px 28px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-shrink:0">
-          <div style="width:52px;height:52px;border-radius:50%;background:var(--brand-glow);border:2px solid var(--brand-line);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:var(--brand);flex-shrink:0">${c.tipo==='empresa'?'🏢':(c.nombre||'?')[0].toUpperCase()}</div>
+          <div style="width:52px;height:52px;border-radius:50%;background:var(--brand-glow);border:2px solid var(--brand-line);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:var(--brand);flex-shrink:0">${c.tipo==='empresa'?'🏢':escapeHtml((c.nombre||'?')[0].toUpperCase())}</div>
           <div style="flex:1">
             <div style="font-size:17px;font-weight:700;color:var(--fg);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
               ${escapeHtml(c.nombre)}
@@ -6580,7 +6699,7 @@ function openClienteWorkspace(id) {
         <!-- Datos de contacto -->
         <div style="padding:14px 28px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:repeat(3,1fr);gap:12px;flex-shrink:0">
           <div><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Teléfono</div><div style="font-size:12px">${c.telefono?`<a href="tel:${escapeHtml(c.telefono)}" style="color:var(--brand);text-decoration:none">${escapeHtml(c.telefono)}</a>`:'<span style="color:var(--fg3)">—</span>'}</div></div>
-          <div><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">WhatsApp</div><div style="font-size:12px">${c.whatsapp?`<a href="https://wa.me/${c.whatsapp.replace(/\D/g,'')}" target="_blank" style="color:var(--green);text-decoration:none">${escapeHtml(c.whatsapp)}</a>`:'<span style="color:var(--fg3)">—</span>'}</div></div>
+          <div><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">WhatsApp</div><div style="font-size:12px">${c.whatsapp?`<a href="https://wa.me/${c.whatsapp.replace(/\D/g,'')}" target="_blank" rel="noopener noreferrer" style="color:var(--green);text-decoration:none">${escapeHtml(c.whatsapp)}</a>`:'<span style="color:var(--fg3)">—</span>'}</div></div>
           <div><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Correo</div><div style="font-size:12px">${c.email?`<a href="mailto:${escapeHtml(c.email)}" style="color:var(--brand);text-decoration:none">${escapeHtml(c.email)}</a>`:'<span style="color:var(--fg3)">—</span>'}</div></div>
           ${c.documento?`<div><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Cédula / Pasaporte</div><div style="font-size:12px;color:var(--fg)">${escapeHtml(c.documento)}</div></div>`:''}
           ${c.notas?`<div style="grid-column:1/-1"><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Notas internas</div><div style="font-size:12px;color:var(--fg2);line-height:1.6">${escapeHtml(c.notas)}</div></div>`:''}
@@ -6616,8 +6735,8 @@ function openClienteWorkspace(id) {
 
         <!-- Footer -->
         <div style="padding:14px 28px;border-top:1px solid var(--border);display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0">
-          ${c.whatsapp?`<a href="https://wa.me/${c.whatsapp.replace(/\D/g,'')}" target="_blank" class="btn btn-green btn-sm">💬 WhatsApp</a>`:''}
-          ${c.telefono?`<a href="tel:${c.telefono}" class="btn btn-ghost btn-sm">📞 Llamar</a>`:''}
+          ${c.whatsapp?`<a href="https://wa.me/${c.whatsapp.replace(/\D/g,'')}" target="_blank" rel="noopener noreferrer" class="btn btn-green btn-sm">💬 WhatsApp</a>`:''}
+          ${c.telefono?`<a href="tel:${escapeHtml(c.telefono)}" class="btn btn-ghost btn-sm">📞 Llamar</a>`:''}
           <button class="btn btn-ghost btn-sm" onclick="editarCliente('${c.id}')">✏ Editar</button>
           <button class="btn btn-ghost btn-sm" onclick="archivarCliente('${c.id}')">${c.archivado?'📤 Restaurar':'📦 Archivar'}</button>
           <button class="btn btn-ghost" onclick="document.getElementById('modal-cliente-ws').remove()">Cerrar</button>
@@ -6629,6 +6748,7 @@ function openClienteWorkspace(id) {
 
 /* ── Portal: generar y revocar token ── */
 function generarTokenPortal(clienteId) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const clientes = getGestionClientes();
   const c = clientes.find(x => x.id === clienteId);
   if (!c) return;
@@ -6640,6 +6760,7 @@ function generarTokenPortal(clienteId) {
   toast('🔑 Enlace del portal generado', 'ok');
 }
 function revocarTokenPortal(clienteId) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   if (!confirm('¿Revocar el enlace? El cliente perderá acceso inmediatamente.')) return;
   const clientes = getGestionClientes();
   const c = clientes.find(x => x.id === clienteId);
@@ -6692,6 +6813,7 @@ function openGestionNuevoCliente() {
 }
 
 function saveGestionNuevoCliente() {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const nombre = document.getElementById('gc-nombre')?.value.trim();
   if (!nombre) { toast('El nombre es obligatorio', 'err'); return; }
   const nuevo = {
@@ -6752,6 +6874,7 @@ function editarCliente(id) {
 }
 
 function saveEditarCliente(id) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const nombre = document.getElementById('ec-nombre')?.value.trim();
   if (!nombre) { toast('El nombre es obligatorio', 'err'); return; }
   const clientes = getGestionClientes();
@@ -6773,6 +6896,7 @@ function saveEditarCliente(id) {
 
 /* ── Archivar cliente ── */
 function archivarCliente(id) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const clientes = getGestionClientes();
   const c = clientes.find(x => x.id === id);
   if (!c) return;
@@ -6819,6 +6943,7 @@ function openNuevoCaso(clienteId) {
 }
 
 function saveNuevoCaso(clienteId) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const materia = document.getElementById('nc-materia')?.value;
   if (!materia) { toast('Selecciona la materia', 'err'); return; }
   const nuevo = {
@@ -6852,6 +6977,7 @@ function saveNuevoCaso(clienteId) {
 
 /* ── Convertir consulta Connect → Cliente + Caso ── */
 function convertirConsultaEnCaso(consultaId) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const inbox = getInboxConsultas();
   const consulta = inbox.find(x => x.id === consultaId);
   if (!consulta) { toast('Consulta no encontrada', 'err'); return; }
@@ -7058,6 +7184,7 @@ function selectTipoAct(btn, casoId) {
 }
 
 function guardarActuacion(casoId) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const tipo = _tipoActSeleccionado[casoId];
   if (!tipo) { toast('Selecciona el tipo de actuación', 'err'); return; }
   const desc     = document.getElementById('act-desc-'      + casoId)?.value.trim();
@@ -7114,6 +7241,8 @@ function guardarActuacion(casoId) {
 }
 
 function cambiarEstadoCaso(casoId, nuevoEstado) {
+  if (!can('write')) { toast('Sin permiso', 'err'); return; }
+  if (!['activo','suspendido','archivado','cerrado'].includes(nuevoEstado)) { toast('Estado no válido', 'err'); return; }
   const casos = getGestionCasos();
   const cs = casos.find(x => x.id === casoId);
   if (!cs) return;
