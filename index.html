@@ -3978,7 +3978,8 @@ const _storage = (() => {
 function getSession()      { return SESSION; }
 function isSuperAdmin()    { return SESSION?.rol === 'superadmin'; }
 function getEmpresaUuid()  {
-  const raw = SESSION?.empresaUuid || SESSION?.empresaId || '';
+  const selected = isSuperAdmin() ? window._saViewEmpresaUuid : null;
+  const raw = selected || SESSION?.empresaUuid || SESSION?.empresaId || '';
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw) ? raw : null;
 }
 function getEmpresaId()    { return isSuperAdmin() ? (window._saViewEmpresa || 'e1') : SESSION?.empresaId; }
@@ -3990,10 +3991,6 @@ function getProcs()        { return DB_PROCS[getEmpresaId()]  || []; }
 function getNotas()        { return DB_NOTAS[getEmpresaId()]  || {}; }
 function getVinculos()     { return DB_VINCULOS[getEmpresaId()] || []; }
 function getEmpresa()      { return DB_EMPRESAS[getEmpresaId()]; }
-function getUsersEmpresa() {
-  if (isSuperAdmin() && !window._saViewEmpresa) return DB_USUARIOS.filter(u => u.rol !== 'superadmin');
-  return DB_USUARIOS.filter(u => u.empresaId === getEmpresaId());
-}
 
 /* ══════════════════════════════════════════
    AUTH
@@ -4196,7 +4193,10 @@ function applyRoleUI() {
   if (navInbox) navInbox.classList.toggle('hidden-tab', !can('write'));
   const saTab = document.getElementById('nav-superadmin');
   saTab.classList.toggle('hidden-tab', !isSuperAdmin());
-  if (isSuperAdmin()) { window._saViewEmpresa = 'e1'; }
+  if (isSuperAdmin()) {
+    window._saViewEmpresa = 'e1';
+    window._saViewEmpresaUuid = SESSION?.empresaUuid || SESSION?.empresaId || null;
+  }
   // Mostrar grupo Admin en nav solo para admin/superadmin
   const adminGroup = document.getElementById('nav-group-admin');
   if (adminGroup) adminGroup.classList.toggle('hidden-group', !can('manageUsers') && !isSuperAdmin());
@@ -5251,7 +5251,7 @@ function getUsersEmpresa() {
   const uuid = getEmpresaUuid();
   if (_adminDirectory.loaded) {
     return _adminDirectory.profiles
-      .filter(p => isSuperAdmin() || p.empresa_id === uuid)
+      .filter(p => p.empresa_id === uuid)
       .map(p => ({
         id:p.user_id, nombre:p.nombre||p.email||'Usuario', email:p.email||'',
         rol:_adminRoleKey(p.rol), empresaId:p.empresa_id, activo:p.activo===true,
@@ -5354,27 +5354,78 @@ async function crearUsuario() {
 /* ══════════════════════════════════════════
    SUPER PANEL
 ══════════════════════════════════════════ */
+function _ensureLocalCompanyContext(company) {
+  if (!company?.id) return null;
+  const ownUuid = SESSION?.empresaUuid || SESSION?.empresaId || null;
+  const localKey = company.id === ownUuid ? 'e1' : company.id;
+
+  DB_EMPRESAS[localKey] = {
+    id: localKey,
+    uuid: company.id,
+    nombre: company.nombre || 'Empresa',
+    plan: company.plan || 'profesional',
+    maxUsers: Number(company.max_users || 10),
+  };
+  if (!DB_JURIS[localKey]) DB_JURIS[localKey] = [];
+  if (!DB_AUDIENCIAS[localKey]) DB_AUDIENCIAS[localKey] = {};
+  if (!DB_NOTAS[localKey]) DB_NOTAS[localKey] = {};
+  if (!DB_VINCULOS[localKey]) DB_VINCULOS[localKey] = [];
+  if (!DB_PROCS[localKey]) DB_PROCS[localKey] = [];
+  return localKey;
+}
+
 function renderSABar() {
   const btns = document.getElementById('sa-empresa-btns');
-  btns.innerHTML = Object.values(DB_EMPRESAS).map(e =>
-    `<button class="sa-empresa-btn${window._saViewEmpresa === e.id ? ' active' : ''}" onclick="saChangeEmpresa('${e.id}')">${escapeHtml(e.nombre)}</button>`
+  if (!btns) return;
+
+  if (!_adminDirectory?.loaded) {
+    const current = SESSION?.empresaNombre || 'Grupo RAF';
+    btns.innerHTML = `<button class="sa-empresa-btn active">${escapeHtml(current)}</button>`;
+    _refreshAdminDirectory().then(() => renderSABar()).catch(() => {});
+    return;
+  }
+
+  const companies = _adminDirectory.companies.filter(e => e.activo !== false);
+  btns.innerHTML = companies.map(e =>
+    `<button class="sa-empresa-btn${getEmpresaUuid() === e.id ? ' active' : ''}" onclick="saChangeEmpresa('${e.id}')">${escapeHtml(e.nombre)}</button>`
   ).join('');
 }
 
-function saChangeEmpresa(eid) {
-  window._saViewEmpresa = eid;
+function saChangeEmpresa(realEmpresaId) {
+  const empresa = _adminDirectory?.companies?.find(e => e.id === realEmpresaId);
+  if (!empresa) {
+    toast('Empresa no encontrada', 'err');
+    return;
+  }
+
+  const localKey = _ensureLocalCompanyContext(empresa);
+  window._saViewEmpresaUuid = empresa.id;
+  window._saViewEmpresa = localKey;
+
   renderSABar();
-  // Solo re-renderizar módulos ligeros; stats y mapa son baratos.
-  // initJuris() es costosa; solo llamarla si la página juris está activa.
-  renderMapa(); buildCal(); renderStats();
+  renderMapa();
+  buildCal();
+  renderStats();
+
   const jurisActive = document.getElementById('page-juris')?.classList.contains('active');
   if (jurisActive) initJuris();
-  document.getElementById('stats-month').value = new Date().getMonth();
-  const empresa = DB_EMPRESAS[eid];
+
+  const sm = document.getElementById('stats-month');
+  if (sm) sm.value = new Date().getMonth();
+
+  const sel = document.getElementById('sa-empresa-sel');
+  if (sel) sel.value = empresa.id;
+  const vn = document.getElementById('sa-viewing-name');
+  if (vn) vn.textContent = empresa.nombre;
+
+  _syncGestionSupabase().then(() => {
+    if (document.getElementById('page-gestion')?.classList.contains('active')) {
+      renderGestionDashboard(); renderGestionClientes(); renderGestionCasos();
+    }
+  });
+
+  renderSAQuickActions(localKey);
   toast(`Viendo empresa: ${empresa.nombre}`, 'ok');
-  const sel = document.getElementById('sa-empresa-sel'); if (sel) sel.value = eid;
-  const vn  = document.getElementById('sa-viewing-name');  if (vn)  vn.textContent = empresa.nombre;
-  renderSAQuickActions(eid);
 }
 
 function renderSuperAdminPage() {
@@ -5426,6 +5477,7 @@ function renderSuperAdminPage() {
   if (sel) {
     sel.innerHTML = companies.map(e => `<option value="${e.id}">${escapeHtml(e.nombre)}</option>`).join('');
     if (getEmpresaUuid()) sel.value = getEmpresaUuid();
+    sel.onchange = () => saChangeEmpresa(sel.value);
   }
   const vn = document.getElementById('sa-viewing-name');
   if (vn) vn.textContent = SESSION?.empresaNombre || companies.find(e=>e.id===getEmpresaUuid())?.nombre || '';
