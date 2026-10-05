@@ -2893,7 +2893,14 @@ body.connect-public-mode #page-connect { display:flex !important; }
         </div>
         <div class="config-row">
           <span id="cfg-notif-status" style="font-size:10.5px;color:var(--fg3)">Cargando preferencias…</span>
-          <button class="btn btn-accent btn-sm" onclick="saveNotificationSettings()">Guardar avisos</button>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" onclick="sendNotificationTest()">Enviar prueba</button>
+            <button class="btn btn-accent btn-sm" onclick="saveNotificationSettings()">Guardar avisos</button>
+          </div>
+        </div>
+        <div class="config-row">
+          <span style="font-size:12px">Proveedor de salida</span>
+          <span id="cfg-mail-provider" class="badge" style="font-size:9.5px">Comprobando…</span>
         </div>
       </div>
       <div class="config-section">
@@ -4652,6 +4659,11 @@ function doRegister() {
 function iniciarSesion(user) {
   SESSION = { ...user };
 
+  // Al autenticar, salir definitivamente del modo público de Connect antes de navegar.
+  document.body.classList.remove('connect-public-mode');
+  const publicLoginBtn = document.getElementById('connect-public-login');
+  if (publicLoginBtn) publicLoginBtn.style.display = 'none';
+
   initStatsMonthSelect();
   applyRoleUI();
 
@@ -4764,6 +4776,12 @@ async function loadNotificationSettings() {
     const {data,error}=await _supa.functions.invoke('leax-notification-settings',{body:{action:'get'}});
     if(error||data?.error) throw error||new Error(data.error);
     _leaxNotificationSettings = {..._leaxNotificationSettings,...(data?.settings||{})};
+    const providerEl=document.getElementById('cfg-mail-provider');
+    const provider=data?.provider||'none';
+    if(providerEl){
+      providerEl.textContent=provider==='gmail'?'Gmail conectado':provider==='resend'?'Correo transaccional conectado':'No conectado';
+      providerEl.style.color=provider==='none'?'var(--red)':'var(--green)';
+    }
     const emailEl=document.getElementById('cfg-notif-email');
     const consultaEl=document.getElementById('cfg-notif-consulta');
     const mensajeEl=document.getElementById('cfg-notif-mensaje');
@@ -4776,6 +4794,29 @@ async function loadNotificationSettings() {
   } catch(e) {
     if(status) status.textContent='No se pudieron cargar las preferencias.';
     console.warn('[LEAX] Notification settings:',e);
+  }
+}
+
+async function sendNotificationTest() {
+  if (!_supa || !SESSION) return;
+  const email_destino=(document.getElementById('cfg-notif-email')?.value||'').trim().toLowerCase();
+  if(!email_destino || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email_destino)){toast('Escribe un correo válido para la prueba','err');return;}
+  const status=document.getElementById('cfg-notif-status');
+  if(status) status.textContent='Enviando prueba…';
+  try{
+    const {data,error}=await _supa.functions.invoke('leax-notification-settings',{body:{action:'test',email_destino}});
+    if(error||data?.error) throw error||new Error(data.error);
+    if(data?.sent){
+      if(status) status.textContent='Prueba enviada correctamente.';
+      toast(`Correo de prueba enviado por ${data.provider==='gmail'?'Gmail':'el proveedor configurado'}.`,'ok');
+    }else{
+      if(status) status.textContent='No hay proveedor de correo conectado.';
+      toast('No se pudo enviar: falta conectar un proveedor de correo.','err');
+    }
+    loadNotificationSettings();
+  }catch(e){
+    if(status) status.textContent='Falló la prueba.';
+    toast(e?.message||'No se pudo enviar la prueba','err');
   }
 }
 
@@ -7544,19 +7585,19 @@ async function nexlexSendEmailNotification(consulta) {
 
 const _nexlexOriginalDoLoginForConnect = typeof doLogin === 'function' ? doLogin : null;
 if (_nexlexOriginalDoLoginForConnect && !_nexlexOriginalDoLoginForConnect._connectWrapped) {
-  doLogin = function() {
-    const r = _nexlexOriginalDoLoginForConnect.apply(this, arguments);
-    setTimeout(() => {
+  doLogin = async function() {
+    const r = await _nexlexOriginalDoLoginForConnect.apply(this, arguments);
+    if (SESSION) {
       document.body.classList.remove('connect-public-mode');
       const b = document.getElementById('connect-public-login');
       if (b) b.style.display = 'none';
       applyConnectVisibility();
-      if (SESSION) goPage('inicio');
+      goPage('inicio');
       // Re-renderizar bandeja con las consultas que llegaron en modo público
       updateInboxBadge();
       if (document.getElementById('inbox-list')) renderInbox();
       if (document.getElementById('inbox-page-list')) renderInboxPage();
-    }, 0);
+    }
     return r;
   };
   doLogin._connectWrapped = true;
