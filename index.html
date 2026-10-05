@@ -2867,6 +2867,36 @@ body.connect-public-mode #page-connect { display:flex !important; }
         <div class="config-row"><span style="font-size:13px">Empresa</span><span id="cfg-empresa" style="font-size:13px;color:var(--fg2)"></span></div>
       </div>
       <div class="config-section">
+        <h4>Notificaciones y correo</h4>
+        <div class="config-row" style="display:block">
+          <div style="font-size:13px;font-weight:600;margin-bottom:5px">Correo para avisos</div>
+          <div style="font-size:10.5px;color:var(--fg3);margin-bottom:8px">Puede ser tu Gmail o cualquier correo que quieras usar para recibir nuevas consultas y mensajes.</div>
+          <input id="cfg-notif-email" type="email" placeholder="tu@gmail.com"
+            style="width:100%;background:var(--card);border:1px solid var(--border-hi);border-radius:var(--radius);padding:9px 10px;color:var(--fg);font-family:inherit;box-sizing:border-box">
+        </div>
+        <div class="config-row">
+          <span style="font-size:13px">Avisarme cuando llegue una consulta</span>
+          <input id="cfg-notif-consulta" type="checkbox" checked>
+        </div>
+        <div class="config-row">
+          <span style="font-size:13px">Avisarme cuando el cliente escriba</span>
+          <input id="cfg-notif-mensaje" type="checkbox" checked>
+        </div>
+        <div class="config-row" style="display:block">
+          <div style="font-size:13px;margin-bottom:7px">Canal predeterminado al responder</div>
+          <select id="cfg-response-channel"
+            style="width:100%;background:var(--card);border:1px solid var(--border-hi);border-radius:var(--radius);padding:9px 10px;color:var(--fg);font-family:inherit">
+            <option value="portal_email">LEAX + correo al cliente</option>
+            <option value="portal">Solo LEAX Connect</option>
+            <option value="email">Correo + copia en LEAX</option>
+          </select>
+        </div>
+        <div class="config-row">
+          <span id="cfg-notif-status" style="font-size:10.5px;color:var(--fg3)">Cargando preferencias…</span>
+          <button class="btn btn-accent btn-sm" onclick="saveNotificationSettings()">Guardar avisos</button>
+        </div>
+      </div>
+      <div class="config-section">
         <h4>Apariencia</h4>
         <div class="config-row">
           <span style="font-size:13px">Tamaño de fuente</span>
@@ -3459,7 +3489,16 @@ body.connect-public-mode #page-connect { display:flex !important; }
           Enviar
         </button>
       </div>
-      <div style="font-size:10.5px;color:var(--fg3);margin-top:6px">Ctrl+Enter para enviar rápido</div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <span style="font-size:10.5px;color:var(--fg3)">Enviar por:</span>
+        <select id="conv-canal-sel"
+          style="background:var(--card);border:1px solid var(--border-hi);border-radius:var(--radius);padding:6px 9px;color:var(--fg);font-size:11px;font-family:inherit">
+          <option value="portal_email">LEAX + correo</option>
+          <option value="portal">Solo LEAX</option>
+          <option value="email">Correo + copia en LEAX</option>
+        </select>
+        <span style="font-size:10px;color:var(--fg3)">Ctrl+Enter para enviar rápido</span>
+      </div>
     </div>
     <div class="modal-footer">
       <select id="conv-estado-sel"
@@ -3830,6 +3869,8 @@ body.connect-public-mode #page-connect { display:flex !important; }
   registerRoute({ id:'caso-workspace',    path:'gestion/caso',         modulo:'gestion', roles:['admin','abogado','superadmin'] });
   registerAction({ id:'convertir-consulta', nombre:'Convertir consulta en caso', modulo:'gestion', roles:['admin','abogado','superadmin'], activo:true });
   registerAction({ id:'generar-token-portal', nombre:'Generar token portal cliente', modulo:'gestion', roles:['admin','abogado','superadmin'], activo:true });
+  registerAction({ id:'configurar-notificaciones-email', nombre:'Configurar avisos por correo', modulo:'connect', roles:['admin','abogado','paralegal','superadmin'], activo:true });
+  registerAction({ id:'responder-consulta-multicanal', nombre:'Responder consulta por LEAX/correo', modulo:'connect', roles:['admin','abogado','superadmin'], activo:true });
 
   /* SQL Supabase requerido para el módulo Gestión:
      CREATE TABLE clientes (
@@ -4707,12 +4748,68 @@ function renderUserPill() {
   else saBar.classList.add('hidden');
 }
 
+let _leaxNotificationSettings = {
+  email_destino:'',
+  nueva_consulta_email:true,
+  mensaje_cliente_email:true,
+  canal_respuesta_default:'portal_email',
+  activo:true
+};
+
+async function loadNotificationSettings() {
+  if (!_supa || !SESSION) return;
+  const status = document.getElementById('cfg-notif-status');
+  if (status) status.textContent = 'Cargando preferencias…';
+  try {
+    const {data,error}=await _supa.functions.invoke('leax-notification-settings',{body:{action:'get'}});
+    if(error||data?.error) throw error||new Error(data.error);
+    _leaxNotificationSettings = {..._leaxNotificationSettings,...(data?.settings||{})};
+    const emailEl=document.getElementById('cfg-notif-email');
+    const consultaEl=document.getElementById('cfg-notif-consulta');
+    const mensajeEl=document.getElementById('cfg-notif-mensaje');
+    const canalEl=document.getElementById('cfg-response-channel');
+    if(emailEl) emailEl.value=_leaxNotificationSettings.email_destino||data?.account_email||SESSION.email||'';
+    if(consultaEl) consultaEl.checked=_leaxNotificationSettings.nueva_consulta_email!==false;
+    if(mensajeEl) mensajeEl.checked=_leaxNotificationSettings.mensaje_cliente_email!==false;
+    if(canalEl) canalEl.value=_leaxNotificationSettings.canal_respuesta_default||'portal_email';
+    if(status) status.textContent='Preferencias sincronizadas.';
+  } catch(e) {
+    if(status) status.textContent='No se pudieron cargar las preferencias.';
+    console.warn('[LEAX] Notification settings:',e);
+  }
+}
+
+async function saveNotificationSettings() {
+  if (!_supa || !SESSION) return;
+  const email_destino=(document.getElementById('cfg-notif-email')?.value||'').trim().toLowerCase();
+  const nueva_consulta_email=document.getElementById('cfg-notif-consulta')?.checked!==false;
+  const mensaje_cliente_email=document.getElementById('cfg-notif-mensaje')?.checked!==false;
+  const canal_respuesta_default=document.getElementById('cfg-response-channel')?.value||'portal_email';
+  const status=document.getElementById('cfg-notif-status');
+  if(email_destino && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email_destino)){toast('Correo de notificación inválido','err');return;}
+  if(status) status.textContent='Guardando…';
+  try {
+    const {data,error}=await _supa.functions.invoke('leax-notification-settings',{body:{
+      action:'save',email_destino,nueva_consulta_email,mensaje_cliente_email,
+      canal_respuesta_default,activo:true
+    }});
+    if(error||data?.error) throw error||new Error(data.error);
+    _leaxNotificationSettings={..._leaxNotificationSettings,...(data?.settings||{})};
+    if(status) status.textContent='Preferencias guardadas.';
+    toast('🔔 Notificaciones actualizadas','ok');
+  } catch(e) {
+    if(status) status.textContent='No se pudo guardar.';
+    toast(e?.message||'No se pudo guardar la configuración','err');
+  }
+}
+
 function updateConfigPage() {
   const u = SESSION; const e = getEmpresa();
   document.getElementById('cfg-nombre').textContent  = u.nombre;
   document.getElementById('cfg-email').textContent   = u.email;
   document.getElementById('cfg-rol').innerHTML       = `<span class="user-role-badge role-${u.rol}">${u.rol}</span>`;
   document.getElementById('cfg-empresa').textContent = u.empresaNombre || e?.nombre || '';
+  loadNotificationSettings();
 }
 
 /* ══════════════════════════════════════════
@@ -7198,6 +7295,8 @@ async function abrirConversacion(id) {
   document.getElementById('conv-caso-info').innerHTML =
     `<strong>${escapeHtml(c.nombre||'Anónimo')}</strong> · ${escapeHtml(c.tipo)} · ${getConnectEstadoLabel(c.estadoInterno||c.estado)}`;
   document.getElementById('conv-estado-sel').value = normalizeConnectEstado(c.estadoInterno||c.estado);
+  const canalSel = document.getElementById('conv-canal-sel');
+  if (canalSel) canalSel.value = _leaxNotificationSettings.canal_respuesta_default || 'portal_email';
   const badge = document.getElementById('conv-estado-badge');
   if (badge) badge.innerHTML = `<span class="badge estado-badge-${normalizeConnectEstado(c.estadoInterno)}">${getConnectEstadoLabel(c.estadoInterno)}</span>`;
   renderConvThread(c);
@@ -7241,13 +7340,16 @@ async function enviarMensajeConv() {
   const btn = document.querySelector('#modal-conversacion .conv-input-wrap .btn');
   if(btn){btn.disabled=true;btn.textContent='Enviando…';}
   try {
+    const canal=document.getElementById('conv-canal-sel')?.value||_leaxNotificationSettings.canal_respuesta_default||'portal_email';
     const {data,error}=await _supa.functions.invoke('leax-consulta-message',{
-      body:{consulta_id:_convConsultaId,mensaje:texto}
+      body:{consulta_id:_convConsultaId,mensaje:texto,canal}
     });
     if(error||data?.error) throw error||new Error(data.error);
     if(input) input.value='';
     await abrirConversacion(_convConsultaId);
-    toast('Mensaje enviado. El cliente será avisado por correo cuando el servicio de correo esté configurado.', 'ok');
+    if(data?.email_sent) toast(`Mensaje enviado por LEAX y ${data.email_provider==='gmail'?'Gmail':'correo'}.`, 'ok');
+    else if(canal==='portal') toast('Mensaje enviado por LEAX Connect.', 'ok');
+    else toast('Mensaje guardado en LEAX. El correo quedó pendiente de proveedor.', 'ok');
   } catch(e) {
     toast(e?.message||'No se pudo enviar el mensaje','err');
   } finally {
