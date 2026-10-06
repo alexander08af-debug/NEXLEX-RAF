@@ -9068,14 +9068,30 @@ async function clientPortalActivate() {
   const seguimiento=document.getElementById('cp-track')?.value.trim().toUpperCase();
   const email=document.getElementById('cp-act-email')?.value.trim().toLowerCase();
   const password=document.getElementById('cp-act-pass')?.value||'';
-  const err=document.getElementById('cp-error');if(err)err.textContent='';
+  const err=document.getElementById('cp-error'); if(err)err.textContent='';
+  let otp=document.getElementById('cp-act-otp')?.value.trim()||'';
   try{
-    const a=await _supa.functions.invoke('leax-client-portal-activate',{body:{action:'activate',seguimiento,email,password}});
+    if(!otp){
+      const a=await _supa.functions.invoke('leax-client-portal-activate',{body:{action:'request_activation',seguimiento,email}});
+      if(a.error||(a.data&&a.data.error))throw a.error||new Error(a.data.error);
+      const pass=document.getElementById('cp-act-pass');
+      if(pass && !document.getElementById('cp-act-otp')){
+        pass.insertAdjacentHTML('afterend','<input id="cp-act-otp" inputmode="numeric" maxlength="6" placeholder="Código de 6 dígitos enviado a tu correo" style="width:100%;box-sizing:border-box;margin:0 0 10px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">');
+      }
+      if(err)err.style.color='var(--green)';
+      if(err)err.textContent='Código enviado. Revisa tu correo e introdúcelo para activar.';
+      const btn=document.querySelector('#client-portal-content button.btn-green');
+      if(btn)btn.textContent='Verificar y activar';
+      return;
+    }
+    const a=await _supa.functions.invoke('leax-client-portal-activate',{body:{action:'verify_activation',seguimiento,email,password,otp}});
     if(a.error||(a.data&&a.data.error))throw a.error||new Error(a.data.error);
     const l=await _supa.auth.signInWithPassword({email,password});
     if(l.error)throw l.error;
     await loadClientPortal();
-  }catch(e){if(err)err.textContent=e?.message||'No se pudo activar la cuenta.';}
+  }catch(e){
+    if(err){err.style.color='var(--red)';err.textContent=e?.message||'No se pudo activar la cuenta.';}
+  }
 }
 
 let _clientPortalData=null;
@@ -9240,11 +9256,40 @@ async function verFlujoCaso(casoId) {
   try{
     const d=await _workflowInvoke('case_workflow',{caso_id:casoId});
     document.getElementById('modal-case-flow')?.remove();
-    const stages=(d.stages||[]).map(function(s){return '<div style="padding:7px 0;border-bottom:1px solid var(--border)"><b>'+escapeHtml(s.nombre)+'</b> <span style="font-size:9px;color:var(--fg3)">· '+escapeHtml(s.estado)+'</span></div>';}).join('')||'<span style="color:var(--fg3)">Sin etapas vinculadas.</span>';
-    const tasks=(d.tasks||[]).map(function(t){return '<div style="padding:7px 0;border-bottom:1px solid var(--border)"><b>'+escapeHtml(t.titulo)+'</b><div style="font-size:9px;color:var(--fg3)">'+escapeHtml(t.estado)+'</div></div>';}).join('')||'<span style="color:var(--fg3)">Sin tareas.</span>';
+    const stages=(d.stages||[]).map(function(s){return '<div style="padding:7px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px"><div style="flex:1"><b>'+escapeHtml(s.nombre)+'</b> <span style="font-size:9px;color:var(--fg3)">· '+escapeHtml(s.estado)+'</span></div><button class="btn btn-ghost btn-sm" onclick="actualizarEtapaCaso(\''+casoId+'\',\''+s.id+'\',\'en_curso\')">En curso</button><button class="btn btn-ghost btn-sm" onclick="actualizarEtapaCaso(\''+casoId+'\',\''+s.id+'\',\'completada\')">✓</button></div>';}).join('')||'<span style="color:var(--fg3)">Sin etapas vinculadas.</span>';
+    const tasks=(d.tasks||[]).map(function(t){return '<div style="padding:7px 0;border-bottom:1px solid var(--border)"><div style="display:flex;align-items:center;gap:6px"><div style="flex:1"><b>'+escapeHtml(t.titulo)+'</b><div style="font-size:9px;color:var(--fg3)">'+escapeHtml(t.estado)+'</div></div>'+(t.estado==='en_revision'?'<button class="btn btn-ghost btn-sm" onclick="revisarTareaAbogado(\''+casoId+'\',\''+t.id+'\')">Revisar</button>':'')+'</div></div>';}).join('')||'<span style="color:var(--fg3)">Sin tareas.</span>';
     const html='<div id="modal-case-flow" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(650px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px"><div style="font-size:15px;font-weight:800;margin-bottom:14px">🔄 Flujo del expediente '+escapeHtml(casoId)+'</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px"><div><b style="font-size:11px">Etapas</b><div style="margin-top:8px">'+stages+'</div></div><div><b style="font-size:11px">Tareas</b><div style="margin-top:8px">'+tasks+'</div></div></div><div style="text-align:right;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-case-flow\').remove()">Cerrar</button></div></div></div>';
     document.body.insertAdjacentHTML('beforeend',html);
   }catch(e){toast(e?.message||'No se pudo cargar el flujo','err');}
+}
+
+async function actualizarEtapaCaso(casoId,stageId,estado) {
+  try{
+    await _workflowInvoke('update_stage',{stage_id:stageId,estado:estado});
+    toast('Etapa actualizada','ok');
+    document.getElementById('modal-case-flow')?.remove();
+    verFlujoCaso(casoId);
+  }catch(e){toast(e?.message||'No se pudo actualizar la etapa','err');}
+}
+
+async function revisarTareaAbogado(casoId,taskId) {
+  try{
+    const d=await _workflowInvoke('task_detail',{task_id:taskId});
+    document.getElementById('modal-task-review')?.remove();
+    const content=d.task.borrador_html||'<p>El paralegal todavía no ha guardado un borrador.</p>';
+    const html='<div id="modal-task-review" style="position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:17000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(900px,98vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;overflow:hidden"><div style="padding:13px 16px;border-bottom:1px solid var(--border)"><b>Revisión · '+escapeHtml(d.task.titulo)+'</b></div><div style="max-height:55vh;overflow:auto;background:#fff;color:#111;padding:32px 40px">'+content+'</div><div style="padding:12px 16px"><textarea id="task-review-comment" rows="3" placeholder="Comentario de revisión..." style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px"></textarea><div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-task-review\').remove()">Cerrar</button><button class="btn btn-ghost" onclick="confirmarRevisionTarea(\''+casoId+'\',\''+taskId+'\',\'correcciones\')">Solicitar correcciones</button><button class="btn btn-green" onclick="confirmarRevisionTarea(\''+casoId+'\',\''+taskId+'\',\'aprobada\')">✓ Aprobar</button></div></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo abrir la revisión','err');}
+}
+async function confirmarRevisionTarea(casoId,taskId,estado) {
+  const comentario=document.getElementById('task-review-comment')?.value.trim()||'';
+  try{
+    await _workflowInvoke('review_task',{task_id:taskId,estado:estado,comentario:comentario});
+    document.getElementById('modal-task-review')?.remove();
+    document.getElementById('modal-case-flow')?.remove();
+    toast(estado==='aprobada'?'Tarea aprobada':'Correcciones enviadas al paralegal','ok');
+    verFlujoCaso(casoId);
+  }catch(e){toast(e?.message||'No se pudo revisar la tarea','err');}
 }
 
 function ensureWorkflowUI() {
