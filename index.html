@@ -3348,6 +3348,7 @@ body.connect-public-mode #page-connect { display:flex !important; }
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost btn-sm" onclick="toast('Adjuntado (simulado)','ok')">📎 Adjuntar</button>
+      <button class="btn btn-ghost btn-sm" onclick="guardarEditorComoModelo()">📚 Guardar como modelo</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-editor')">Cerrar</button>
       <button class="btn btn-accent" onclick="saveEditor()">💾 Guardar</button>
     </div>
@@ -4704,6 +4705,7 @@ function iniciarSesion(user) {
   if (smEl && smEl.value === '') smEl.value = new Date().getMonth();
 
   buildNav();
+  ensureWorkflowUI();
   renderUserPill();
   updateConfigPage();
   _syncLegalKnowledge();
@@ -8733,7 +8735,10 @@ function openCasoWorkspace(id) {
         </div>
 
         <!-- Footer -->
-        <div style="padding:12px 28px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-shrink:0">
+        <div style="padding:12px 28px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;flex-shrink:0">
+          <button class="btn btn-ghost btn-sm" onclick="vincularProcedimientoCaso('${cs.id}')">🧩 Procedimiento</button>
+          <button class="btn btn-ghost btn-sm" onclick="asignarTareaParalegal('${cs.id}')">📌 Asignar tarea</button>
+          <button class="btn btn-ghost btn-sm" onclick="verFlujoCaso('${cs.id}')">🔄 Flujo</button>
           <button class="btn btn-ghost btn-sm" onclick="generarInformeCaso('${cs.id}')">📑 Informe</button>
           ${cli?`<button class="btn btn-ghost btn-sm" onclick="document.getElementById('modal-caso-ws').remove();openClienteWorkspace('${cli.id}')">👤 Ver cliente</button>`:''}
           <button class="btn btn-ghost" onclick="document.getElementById('modal-caso-ws').remove()">Cerrar</button>
@@ -9135,6 +9140,153 @@ async function clientPortalLogout() {
   try{await _supa.auth.signOut();}catch{}
   document.getElementById('client-portal-shell')?.remove();
   showClientPortalEntry();
+}
+
+
+/* ── Mapa → Modelos → Tareas / Paralegal ── */
+function _workflowInvoke(action, body) {
+  if (!_supa) return Promise.reject(new Error('Servicio no disponible.'));
+  return _supa.functions.invoke('leax-workflow',{body:{action:action,...(body||{})}}).then(function(r){
+    if(r.error || (r.data && r.data.error)) throw r.error || new Error(r.data.error);
+    return r.data;
+  });
+}
+
+async function guardarEditorComoModelo() {
+  if (!can('write')) { toast('Sin permiso','err'); return; }
+  const titulo=(document.getElementById('editor-title')?.textContent||'Modelo legal').trim();
+  const contenido=sanitizeEditorHtml(EA().innerHTML);
+  if(!contenido){toast('El editor está vacío','err');return;}
+  try{
+    const source='mapa:'+titulo.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,120);
+    await _workflowInvoke('save_model',{titulo:titulo,categoria:'procedimiento',contenido_html:contenido,mapa_source_key:source});
+    toast('Modelo maestro guardado. El original queda intacto.','ok');
+  }catch(e){toast(e?.message||'No se pudo guardar el modelo','err');}
+}
+
+function _flattenProcedures() {
+  const out=[];
+  (getProcs()||[]).forEach(function(p){
+    (p.s||[]).forEach(function(s){
+      out.push({label:(p.e||'📘')+' '+p.n+' — '+s,nombre:s,grupo:p.n,source:_contentSourceKey('mapa',{n:p.n+'-'+s})});
+    });
+  });
+  return out;
+}
+
+async function vincularProcedimientoCaso(casoId) {
+  if(!can('write')){toast('Sin permiso','err');return;}
+  const list=_flattenProcedures();
+  if(!list.length){toast('No hay procedimientos disponibles en el Mapa','err');return;}
+  document.getElementById('modal-link-proc')?.remove();
+  const opts=list.map(function(x,i){return '<option value="'+i+'">'+escapeHtml(x.label)+'</option>';}).join('');
+  const html='<div id="modal-link-proc" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px">'+
+    '<div style="width:min(620px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px">'+
+    '<div style="font-size:15px;font-weight:800;margin-bottom:12px">🧩 Vincular Mapa de Procedimiento</div>'+
+    '<select id="wf-proc-select" style="width:100%;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px">'+opts+'</select>'+
+    '<div style="font-size:10px;color:var(--fg3);margin:12px 0 5px">Etapas para el seguimiento del cliente · una por línea</div>'+
+    '<textarea id="wf-proc-stages" rows="7" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:10px;border-radius:7px" placeholder="Apertura del expediente&#10;Preparación y depósito&#10;Audiencia / trámite&#10;Decisión / cierre"></textarea>'+
+    '<div style="font-size:10px;color:var(--fg3);margin-top:6px">Se crea una copia/instancia para este caso. El Mapa maestro no se modifica.</div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-link-proc\').remove()">Cancelar</button><button class="btn btn-accent" onclick="confirmarVinculoProcedimiento(\''+casoId+'\')">Vincular</button></div></div></div>';
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+async function confirmarVinculoProcedimiento(casoId) {
+  const list=_flattenProcedures();
+  const idx=Number(document.getElementById('wf-proc-select')?.value||0);
+  const proc=list[idx]; if(!proc)return;
+  const etapas=(document.getElementById('wf-proc-stages')?.value||'').split('\n').map(function(x){return x.trim();}).filter(Boolean);
+  try{
+    await _workflowInvoke('link_procedure',{caso_id:casoId,nombre:proc.nombre,mapa_source_key:proc.source,snapshot:{grupo:proc.grupo,subtipo:proc.nombre},etapas:etapas});
+    const cs=getGestionCasos().find(function(x){return x.id===casoId;});if(cs){cs.procedimientoNombre=proc.nombre;cs.procedimientoKey=proc.source;cs.etapaActual=etapas[0]||'';}
+    document.getElementById('modal-link-proc')?.remove();
+    toast('Procedimiento vinculado sin alterar el Mapa maestro','ok');
+  }catch(e){toast(e?.message||'No se pudo vincular','err');}
+}
+
+async function asignarTareaParalegal(casoId) {
+  if(!can('write')){toast('Sin permiso','err');return;}
+  try{
+    const data=await Promise.all([_workflowInvoke('list_models'),_workflowInvoke('list_paralegals')]);
+    const models=data[0].models||[], pars=data[1].paralegals||[];
+    if(!pars.length){toast('No hay paralegales activos en la oficina','err');return;}
+    document.getElementById('modal-task-assign')?.remove();
+    const mopts='<option value="">Sin modelo</option>'+models.map(function(m){return '<option value="'+m.id+'">'+escapeHtml(m.titulo)+'</option>';}).join('');
+    const popts=pars.map(function(p){return '<option value="'+p.user_id+'">'+escapeHtml(p.nombre||'Paralegal')+'</option>';}).join('');
+    const html='<div id="modal-task-assign" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(600px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px">'+
+      '<div style="font-size:15px;font-weight:800;margin-bottom:12px">📌 Asignar trabajo al paralegal</div>'+
+      '<input id="wf-task-title" placeholder="Ej: Preparar borrador de recurso" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px;margin-bottom:8px">'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><select id="wf-task-model" style="background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px">'+mopts+'</select><select id="wf-task-paralegal" style="background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px">'+popts+'</select></div>'+
+      '<textarea id="wf-task-instructions" rows="5" placeholder="Instrucciones del abogado..." style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px;margin-top:8px"></textarea>'+
+      '<div style="font-size:10px;color:var(--fg3);margin-top:6px">Si eliges un modelo, el paralegal trabaja sobre una copia de contenido. Nunca modifica el modelo maestro.</div>'+
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-task-assign\').remove()">Cancelar</button><button class="btn btn-accent" onclick="confirmarAsignacionTarea(\''+casoId+'\')">Asignar</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo preparar la asignación','err');}
+}
+
+async function confirmarAsignacionTarea(casoId) {
+  const titulo=document.getElementById('wf-task-title')?.value.trim();
+  const modelo_id=document.getElementById('wf-task-model')?.value||null;
+  const asignado_a=document.getElementById('wf-task-paralegal')?.value||'';
+  const instrucciones=document.getElementById('wf-task-instructions')?.value.trim()||'';
+  if(!titulo){toast('Escribe el título de la tarea','err');return;}
+  try{
+    await _workflowInvoke('assign_task',{caso_id:casoId,titulo:titulo,modelo_id:modelo_id,asignado_a:asignado_a,instrucciones:instrucciones});
+    document.getElementById('modal-task-assign')?.remove();toast('Tarea asignada al paralegal','ok');
+  }catch(e){toast(e?.message||'No se pudo asignar','err');}
+}
+
+async function verFlujoCaso(casoId) {
+  try{
+    const d=await _workflowInvoke('case_workflow',{caso_id:casoId});
+    document.getElementById('modal-case-flow')?.remove();
+    const stages=(d.stages||[]).map(function(s){return '<div style="padding:7px 0;border-bottom:1px solid var(--border)"><b>'+escapeHtml(s.nombre)+'</b> <span style="font-size:9px;color:var(--fg3)">· '+escapeHtml(s.estado)+'</span></div>';}).join('')||'<span style="color:var(--fg3)">Sin etapas vinculadas.</span>';
+    const tasks=(d.tasks||[]).map(function(t){return '<div style="padding:7px 0;border-bottom:1px solid var(--border)"><b>'+escapeHtml(t.titulo)+'</b><div style="font-size:9px;color:var(--fg3)">'+escapeHtml(t.estado)+'</div></div>';}).join('')||'<span style="color:var(--fg3)">Sin tareas.</span>';
+    const html='<div id="modal-case-flow" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(650px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px"><div style="font-size:15px;font-weight:800;margin-bottom:14px">🔄 Flujo del expediente '+escapeHtml(casoId)+'</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px"><div><b style="font-size:11px">Etapas</b><div style="margin-top:8px">'+stages+'</div></div><div><b style="font-size:11px">Tareas</b><div style="margin-top:8px">'+tasks+'</div></div></div><div style="text-align:right;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-case-flow\').remove()">Cerrar</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo cargar el flujo','err');}
+}
+
+function ensureWorkflowUI() {
+  const nav=document.getElementById('main-nav');
+  if(!nav)return;
+  let btn=document.getElementById('nav-my-tasks');
+  if(getRol()==='paralegal'){
+    if(!btn){btn=document.createElement('div');btn.id='nav-my-tasks';btn.className='nav-tab';btn.textContent='📌 Mis tareas';btn.onclick=showParalegalTasks;nav.appendChild(btn);}
+    btn.style.display='';
+  } else if(btn) btn.style.display='none';
+}
+
+async function showParalegalTasks() {
+  try{
+    const d=await _workflowInvoke('my_tasks');
+    document.getElementById('modal-my-tasks')?.remove();
+    const models=new Map((d.models||[]).map(function(m){return[m.id,m];}));
+    const rows=(d.tasks||[]).map(function(t){
+      const m=models.get(t.modelo_id);
+      return '<div style="background:var(--card);border:1px solid var(--border);border-radius:9px;padding:13px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px"><div><b>'+escapeHtml(t.titulo)+'</b><div style="font-size:10px;color:var(--fg3)">Caso '+escapeHtml(t.caso_id)+' · '+escapeHtml(t.estado)+'</div></div><div style="display:flex;gap:5px;flex-wrap:wrap">'+(m?'<button class="btn btn-ghost btn-sm" onclick="abrirTareaBorrador(\''+t.id+'\')">✍ Trabajar copia</button>':'')+'<button class="btn btn-ghost btn-sm" onclick="cambiarEstadoTareaParalegal(\''+t.id+'\',\'en_revision\')">Enviar a revisión</button></div></div>'+(t.instrucciones?'<div style="font-size:11px;color:var(--fg2);margin-top:8px">'+escapeHtml(t.instrucciones)+'</div>':'')+'</div>';
+    }).join('')||'<div style="color:var(--fg3)">No tienes tareas asignadas.</div>';
+    const html='<div id="modal-my-tasks" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><b>📌 Mis tareas</b><button class="close-btn" onclick="document.getElementById(\'modal-my-tasks\').remove()">×</button></div>'+rows+'</div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudieron cargar tus tareas','err');}
+}
+
+async function abrirTareaBorrador(taskId) {
+  try{
+    const d=await _workflowInvoke('task_detail',{task_id:taskId});
+    const content=d.task.borrador_html || d.model?.contenido_html || '<p></p>';
+    document.getElementById('modal-task-draft')?.remove();
+    const html='<div id="modal-task-draft" style="position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:16000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(900px,98vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;overflow:hidden"><div style="padding:13px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between"><b>'+escapeHtml(d.task.titulo)+'</b><span style="font-size:10px;color:var(--fg3)">Copia de trabajo · v'+(d.task.version_borrador||0)+'</span></div><div id="task-draft-editor" contenteditable="true" style="min-height:420px;max-height:65vh;overflow:auto;background:#fff;color:#111;padding:36px 42px;line-height:1.6">'+content+'</div><div style="padding:12px 16px;display:flex;justify-content:flex-end;gap:8px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-task-draft\').remove()">Cerrar</button><button class="btn btn-accent" onclick="guardarBorradorTarea(\''+taskId+'\')">💾 Guardar versión</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo abrir la tarea','err');}
+}
+
+async function guardarBorradorTarea(taskId) {
+  const html=document.getElementById('task-draft-editor')?.innerHTML||'';
+  try{const d=await _workflowInvoke('save_task_draft',{task_id:taskId,contenido_html:html});toast('Borrador guardado · versión '+d.version,'ok');}catch(e){toast(e?.message||'No se pudo guardar','err');}
+}
+async function cambiarEstadoTareaParalegal(taskId,estado) {
+  try{await _workflowInvoke('update_task',{task_id:taskId,estado:estado});toast('Tarea enviada a revisión','ok');document.getElementById('modal-my-tasks')?.remove();showParalegalTasks();}catch(e){toast(e?.message||'No se pudo actualizar','err');}
 }
 
 /* ══════════════════════════════════════════
