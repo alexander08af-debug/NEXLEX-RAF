@@ -4741,14 +4741,20 @@ async function doLogout() {
 
 async function initSupabaseAuth() {
   if (!_supa) return;
+  const portalRoute = new URLSearchParams(location.search).get('portal') === '1';
   try {
     const { data, error } = await _supa.auth.getSession();
+    if (portalRoute) {
+      showClientPortalEntry();
+      if (!error && data?.session?.user) await loadClientPortal();
+      return;
+    }
     if (error || !data?.session?.user) return;
     const user = await _loadSupabaseUserProfile(data.session.user);
     iniciarSesion(user);
   } catch (e) {
     console.warn('[LEAX] Sesión previa inválida:', e);
-    try { await _supa.auth.signOut(); } catch {}
+    if (!portalRoute) { try { await _supa.auth.signOut(); } catch {} }
   }
 }
 
@@ -8906,6 +8912,225 @@ LEAX | SJT Case Management · Confidencial · Grupo RAF
       </div>
     </div>`;
   document.body.insertAdjacentHTML('beforeend', html);
+}
+
+
+/* ══════════════════════════════════════════
+   LEAX | SJT — Portal Cliente + Expediente
+   Fase 2.1 — extensión aditiva
+══════════════════════════════════════════ */
+async function habilitarPortalCliente(clienteId) {
+  if (!can('write') || !_supa) { toast('Sin permiso','err'); return; }
+  const cli = getGestionClientes().find(function(x){ return x.id===clienteId; });
+  if (!cli || !cli.email) { toast('El cliente necesita un correo registrado para activar su cuenta.','err'); return; }
+  try {
+    const r = await _supa.functions.invoke('leax-client-portal-admin',{body:{action:'enable',cliente_id:clienteId}});
+    if (r.error || (r.data && r.data.error)) throw r.error || new Error(r.data.error);
+    cli.portalActivo = true;
+    cli.numeroSeguimiento = r.data.seguimiento;
+    cli.portalHabilitadoAt = new Date().toISOString();
+    saveGestionClientes(getGestionClientes());
+    document.getElementById('modal-cliente-ws')?.remove();
+    openClienteWorkspace(clienteId);
+    toast(r.data.email_sent ? 'Portal habilitado e invitación enviada' : 'Portal habilitado. Comparte el acceso con el cliente.','ok');
+  } catch(e) { toast(e?.message || 'No se pudo habilitar el portal','err'); }
+}
+
+async function loadCaseDocuments(casoId) {
+  const el = document.getElementById('case-docs-'+casoId);
+  if (!el || !_supa) return;
+  try {
+    const r = await _supa.from('documentos')
+      .select('id,titulo,nombre_original,categoria,mime_type,visible_cliente,estado_documento,created_at')
+      .eq('caso_id',casoId).order('created_at',{ascending:false});
+    if (r.error) throw r.error;
+    if (!r.data || !r.data.length) {
+      el.innerHTML = '<div style="padding:8px 0;color:var(--fg3);font-size:11px">Sin documentos en este expediente.</div>';
+      return;
+    }
+    el.innerHTML = r.data.map(function(d){
+      const icon = d.mime_type==='application/pdf' ? '📕' : '📄';
+      const vis = d.visible_cliente ? '👁 Visible cliente' : '🔒 Interno';
+      const action = d.visible_cliente ? 'Ocultar' : 'Publicar';
+      const next = d.visible_cliente ? 'false' : 'true';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)">'+
+        '<span>'+icon+'</span>'+
+        '<div style="flex:1;min-width:0"><div style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(d.titulo||d.nombre_original)+'</div>'+
+        '<div style="font-size:9.5px;color:var(--fg3)">'+escapeHtml(d.categoria||'otro')+' · '+vis+'</div></div>'+
+        '<button class="btn btn-ghost btn-sm" onclick="abrirDocumentoInterno(\''+d.id+'\')">Ver</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="toggleDocumentoCliente(\''+d.id+'\',\''+casoId+'\','+next+')">'+action+'</button></div>';
+    }).join('');
+  } catch(e) { el.textContent='No se pudieron cargar los documentos.'; }
+}
+
+async function subirDocumentoCaso(casoId) {
+  if (!can('write') || !_supa) return;
+  const input=document.getElementById('doc-file-'+casoId);
+  const file=input && input.files && input.files[0];
+  if(!file){toast('Selecciona un archivo','err');return;}
+  if(file.size>10485760){toast('El archivo supera 10 MB','err');return;}
+  const cs=getGestionCasos().find(function(x){return x.id===casoId;});
+  const cli=cs && getGestionClientes().find(function(x){return x.id===cs.clienteId;});
+  if(!cs||!cli)return;
+  const safe=(file.name||'archivo').replace(/[^a-zA-Z0-9._-]+/g,'-').slice(-140);
+  const path=getEmpresaUuid()+'/cases/'+casoId+'/'+crypto.randomUUID()+'-'+safe;
+  try{
+    const up=await _supa.storage.from('leax-documentos').upload(path,file,{contentType:file.type||'application/octet-stream',upsert:false});
+    if(up.error)throw up.error;
+    const visible=document.getElementById('doc-visible-'+casoId)?.checked===true;
+    const cat=document.getElementById('doc-cat-'+casoId)?.value||'otro';
+    const ins=await _supa.from('documentos').insert({
+      empresa_id:getEmpresaUuid(),modulo:'expediente',cliente_id:cli.id,caso_id:casoId,
+      nombre_original:file.name,titulo:file.name,storage_path:path,mime_type:file.type||'application/octet-stream',
+      tamano:file.size,categoria:cat,visible_cliente:visible,estado_documento:'recibido',
+      subido_por:SESSION?.authUserId||SESSION?.id||null
+    });
+    if(ins.error)throw ins.error;
+    input.value='';
+    await loadCaseDocuments(casoId);
+    toast('Documento agregado al expediente','ok');
+  }catch(e){toast(e?.message||'No se pudo subir el documento','err');}
+}
+
+async function toggleDocumentoCliente(docId,casoId,visible) {
+  if(!can('write')||!_supa)return;
+  const r=await _supa.from('documentos').update({visible_cliente:visible}).eq('id',docId);
+  if(r.error){toast(r.error.message,'err');return;}
+  await loadCaseDocuments(casoId);
+  toast(visible?'Documento visible para cliente':'Documento ocultado del portal','ok');
+}
+
+async function abrirDocumentoInterno(docId) {
+  const r=await _supa.from('documentos').select('storage_path,mime_type,titulo,nombre_original').eq('id',docId).maybeSingle();
+  if(r.error||!r.data){toast('Documento no disponible','err');return;}
+  const s=await _supa.storage.from('leax-documentos').createSignedUrl(r.data.storage_path,300);
+  if(s.error||!s.data?.signedUrl){toast('No se pudo abrir','err');return;}
+  abrirVisorDocumento(s.data.signedUrl,r.data.titulo||r.data.nombre_original,r.data.mime_type);
+}
+
+function abrirVisorDocumento(url,title,mime) {
+  document.getElementById('leax-doc-viewer')?.remove();
+  const src=(mime||'').includes('pdf') ? url+'#toolbar=0' : url;
+  const html='<div id="leax-doc-viewer" style="position:fixed;inset:0;background:rgba(0,0,0,.86);z-index:20000;display:flex;align-items:center;justify-content:center;padding:20px">'+
+    '<div style="width:min(1000px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;overflow:hidden">'+
+    '<div style="padding:11px 14px;display:flex;justify-content:space-between;align-items:center"><strong>'+escapeHtml(title||'Documento')+'</strong>'+
+    '<button class="close-btn" onclick="document.getElementById(\'leax-doc-viewer\').remove()">×</button></div>'+
+    '<iframe src="'+src+'" style="width:100%;height:72vh;border:0;background:#fff"></iframe></div></div>';
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+function showClientPortalEntry() {
+  document.body.classList.remove('connect-public-mode');
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('main-app').classList.remove('visible');
+  if(document.getElementById('client-portal-shell'))return;
+  const shell=document.createElement('div');
+  shell.id='client-portal-shell';
+  shell.style.cssText='position:fixed;inset:0;z-index:19000;background:var(--bg);overflow:auto;color:var(--fg)';
+  shell.innerHTML='<div style="max-width:1080px;margin:auto;padding:28px 20px">'+
+    '<div style="display:flex;justify-content:space-between;margin-bottom:28px"><div><div style="font-family:Georgia,serif;font-size:24px">LEAX <span style="color:var(--brand)">| SJT</span></div><div style="font-size:10px;color:var(--fg3)">PORTAL DEL CLIENTE</div></div>'+
+    '<a href="'+location.pathname+'" style="font-size:11px;color:var(--fg3)">Volver a Connect</a></div>'+
+    '<div id="client-portal-content"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px;max-width:820px;margin:60px auto">'+
+    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px"><h3>Entrar</h3>'+
+    '<input id="cp-email" type="email" placeholder="Correo" style="width:100%;box-sizing:border-box;margin:8px 0;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<input id="cp-pass" type="password" placeholder="Contraseña" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<button class="btn btn-accent" style="width:100%;justify-content:center" onclick="clientPortalLogin()">Entrar</button></div>'+
+    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px"><h3>Activar cuenta</h3>'+
+    '<input id="cp-track" placeholder="Número de seguimiento" style="width:100%;box-sizing:border-box;margin:8px 0;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<input id="cp-act-email" type="email" placeholder="Correo registrado" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<input id="cp-act-pass" type="password" placeholder="Crear contraseña (mín. 8)" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<button class="btn btn-green" style="width:100%;justify-content:center" onclick="clientPortalActivate()">Activar</button></div></div>'+
+    '<div id="cp-error" style="max-width:820px;margin:-42px auto 0;color:var(--red);font-size:11px"></div></div></div>';
+  document.body.appendChild(shell);
+}
+
+async function clientPortalLogin() {
+  const email=document.getElementById('cp-email')?.value.trim().toLowerCase();
+  const password=document.getElementById('cp-pass')?.value||'';
+  const err=document.getElementById('cp-error');if(err)err.textContent='';
+  try{
+    const r=await _supa.auth.signInWithPassword({email,password});
+    if(r.error)throw r.error;
+    await loadClientPortal();
+  }catch(e){if(err)err.textContent='No se pudo iniciar sesión. Verifica tus credenciales.';}
+}
+
+async function clientPortalActivate() {
+  const seguimiento=document.getElementById('cp-track')?.value.trim().toUpperCase();
+  const email=document.getElementById('cp-act-email')?.value.trim().toLowerCase();
+  const password=document.getElementById('cp-act-pass')?.value||'';
+  const err=document.getElementById('cp-error');if(err)err.textContent='';
+  try{
+    const a=await _supa.functions.invoke('leax-client-portal-activate',{body:{action:'activate',seguimiento,email,password}});
+    if(a.error||(a.data&&a.data.error))throw a.error||new Error(a.data.error);
+    const l=await _supa.auth.signInWithPassword({email,password});
+    if(l.error)throw l.error;
+    await loadClientPortal();
+  }catch(e){if(err)err.textContent=e?.message||'No se pudo activar la cuenta.';}
+}
+
+let _clientPortalData=null;
+let _clientPortalCase=null;
+
+async function loadClientPortal() {
+  showClientPortalEntry();
+  const r=await _supa.functions.invoke('leax-client-portal',{body:{action:'dashboard'}});
+  if(r.error||(r.data&&r.data.error)){
+    const e=document.getElementById('cp-error');if(e)e.textContent=(r.data&&r.data.error)||'No se pudo cargar el portal.';
+    return;
+  }
+  _clientPortalData=r.data;
+  if(!_clientPortalCase||!r.data.casos?.some(function(x){return x.id===_clientPortalCase;}))_clientPortalCase=r.data.casos?.[0]?.id||null;
+  renderClientPortal();
+}
+
+function renderClientPortal() {
+  const root=document.getElementById('client-portal-content');
+  const d=_clientPortalData;
+  if(!root||!d)return;
+  const cli=d.cliente||{};
+  const cases=d.casos||[];
+  const cs=cases.find(function(x){return x.id===_clientPortalCase;})||cases[0]||null;
+  let side='';
+  cases.forEach(function(x){
+    side+='<button onclick="_clientPortalCase=\''+x.id+'\';renderClientPortal()" style="width:100%;text-align:left;background:'+(cs&&cs.id===x.id?'var(--brand-glow)':'transparent')+';border:1px solid '+(cs&&cs.id===x.id?'var(--brand-line)':'var(--border)')+';border-radius:8px;padding:10px;margin-bottom:7px;color:var(--fg);cursor:pointer"><b>'+escapeHtml(x.id)+' · '+escapeHtml(x.materia||'Proceso')+'</b><div style="font-size:9.5px;color:var(--fg3);margin-top:3px">'+escapeHtml(x.estado||'activo')+'</div></button>';
+  });
+  let main='<div style="padding:30px;color:var(--fg3)">Todavía no tienes procesos visibles.</div>';
+  if(cs){
+    let stages='';
+    (cs.etapas||[]).forEach(function(e,i){
+      const bg=e.estado==='completada'?'var(--green)':e.estado==='en_curso'?'var(--brand)':'var(--card-hover)';
+      stages+='<div style="display:flex;gap:10px"><div><div style="width:18px;height:18px;border-radius:50%;background:'+bg+';text-align:center;line-height:18px;font-size:9px">'+(e.estado==='completada'?'✓':i+1)+'</div></div><div style="padding-bottom:13px"><b style="font-size:11px">'+escapeHtml(e.nombre)+'</b>'+(e.descripcion_cliente?'<div style="font-size:10px;color:var(--fg3)">'+escapeHtml(e.descripcion_cliente)+'</div>':'')+'</div></div>';
+    });
+    let moves='';
+    (cs.movimientos||[]).forEach(function(m){
+      moves+='<div style="padding:9px 0;border-bottom:1px solid var(--border)"><div style="font-size:9.5px;color:var(--fg3)">'+new Date(m.created_at).toLocaleDateString('es-DO')+'</div><b style="font-size:11px">'+escapeHtml(m.titulo||'Actualización')+'</b>'+(m.descripcion_cliente?'<div style="font-size:10.5px;color:var(--fg2)">'+escapeHtml(m.descripcion_cliente)+'</div>':'')+'</div>';
+    });
+    if(!moves)moves='<div style="font-size:11px;color:var(--fg3)">Sin movimientos visibles.</div>';
+    let docs='';
+    (cs.documentos||[]).forEach(function(doc){
+      docs+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)"><span>'+(doc.mime_type==='application/pdf'?'📕':'📄')+'</span><div style="flex:1"><b style="font-size:11px">'+escapeHtml(doc.titulo||doc.nombre_original)+'</b><div style="font-size:9px;color:var(--fg3)">'+escapeHtml(doc.categoria||'Documento')+'</div></div><button class="btn btn-ghost btn-sm" onclick="openClientPortalDocument(\''+doc.id+'\')">Ver</button></div>';
+    });
+    if(!docs)docs='<div style="font-size:11px;color:var(--fg3)">No hay documentos visibles.</div>';
+    main='<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:12px"><b style="font-size:15px">'+escapeHtml(cs.id)+' · '+escapeHtml(cs.materia||'Proceso')+'</b><div style="font-size:10px;color:var(--fg3);margin-top:4px">'+escapeHtml(cs.subtipo||'')+' · Estado: '+escapeHtml(cs.estado||'activo')+'</div></div>'+
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"><div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px"><b style="font-size:11px">📦 Seguimiento</b><div style="margin-top:12px">'+(stages||moves)+'</div></div>'+
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px"><b style="font-size:11px">📁 Documentos</b><div style="margin-top:8px">'+docs+'</div></div></div>'+
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:12px"><b style="font-size:11px">🕒 Movimientos recientes</b>'+moves+'</div>';
+  }
+  root.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><div><div style="font-size:20px;font-weight:800">Hola, '+escapeHtml(cli.nombre||'Cliente')+'</div><div style="font-size:10px;color:var(--fg3)">Seguimiento: '+escapeHtml(cli.numero_seguimiento||'—')+'</div></div><button class="btn btn-ghost btn-sm" onclick="clientPortalLogout()">Cerrar sesión</button></div>'+
+    '<div style="display:grid;grid-template-columns:minmax(180px,230px) minmax(0,1fr);gap:16px"><aside>'+(side||'<span style="font-size:11px;color:var(--fg3)">Sin procesos.</span>')+'</aside><main>'+main+'</main></div>';
+}
+
+async function openClientPortalDocument(id) {
+  const r=await _supa.functions.invoke('leax-client-portal',{body:{action:'document',documento_id:id}});
+  if(r.error||(r.data&&r.data.error)){alert((r.data&&r.data.error)||'No se pudo abrir');return;}
+  abrirVisorDocumento(r.data.signed_url,r.data.documento?.nombre,r.data.documento?.mime_type);
+}
+
+async function clientPortalLogout() {
+  try{await _supa.auth.signOut();}catch{}
+  document.getElementById('client-portal-shell')?.remove();
+  showClientPortalEntry();
 }
 
 /* ══════════════════════════════════════════
