@@ -6390,7 +6390,11 @@ function _rowToConsulta(row) {
     fechaRecibido:    row.fecha_creacion || new Date().toISOString(),
     fechaLectura:     '',
     fechaRespuesta:   '',
-    fechaAsignacion:  ''
+    fechaAsignacion:  '',
+    convertidaEnCaso: row.convertida_en_caso === true,
+    clienteId:        row.cliente_id || null,
+    casoId:           row.caso_id || null,
+    fechaConversion:  row.fecha_conversion || null
   });
 }
 
@@ -6538,7 +6542,7 @@ async function deleteLegalDocument(documento) {
 async function _supaGetConsultas() {
   if (!_supa || !can('write')) return [];
   try {
-    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,descripcion,provincia,nombre,telefono,whatsapp,email,estado,abogado_asignado,observaciones,empresa_id,leida,fecha_creacion,fecha_actualizacion').order('fecha_creacion', { ascending: false });
+    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,descripcion,provincia,nombre,telefono,whatsapp,email,estado,abogado_asignado,observaciones,empresa_id,leida,fecha_creacion,fecha_actualizacion,convertida_en_caso,cliente_id,caso_id,fecha_conversion').order('fecha_creacion', { ascending: false });
     if (error) { console.warn('[LEAX | SJT] Supabase select error:', error.message); return []; }
     return (data || []).map(_rowToConsulta);
   } catch(e) {
