@@ -8676,7 +8676,8 @@ function openCasoWorkspace(id) {
           <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px" id="tipo-act-btns-${cs.id}">
             ${TIPOS_ACTUACION.map(t=>`<button class="tipo-act-btn" data-tipo="${t.key}" onmousedown="selectTipoAct(this,'${cs.id}')" style="background:var(--card-hover);border:1px solid var(--border);border-radius:var(--radius);padding:5px 11px;font-size:11px;font-weight:600;color:var(--fg2);cursor:pointer;font-family:inherit;transition:all .12s;user-select:none">${t.icon} ${t.label}</button>`).join('')}
           </div>
-          <textarea id="act-desc-${cs.id}" rows="2" placeholder="Descripción de la actuación..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:8px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none;resize:none;box-sizing:border-box;margin-bottom:7px"></textarea>
+          <textarea id="act-desc-${cs.id}" rows="2" placeholder="Descripción interna de la actuación..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:8px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none;resize:none;box-sizing:border-box;margin-bottom:7px"></textarea>
+          <textarea id="act-cliente-${cs.id}" rows="2" placeholder="Descripción para el cliente (opcional)..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:8px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none;resize:none;box-sizing:border-box;margin-bottom:7px"></textarea>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
             <input id="act-resultado-${cs.id}"  placeholder="Resultado (opcional)..."   style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none">
             <input id="act-proximo-${cs.id}"    placeholder="Próximo paso (opcional)..." style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none">
@@ -8762,12 +8763,14 @@ async function guardarActuacion(casoId) {
   const tipo = _tipoActSeleccionado[casoId];
   if (!tipo) { toast('Selecciona el tipo de actuación', 'err'); return; }
   const desc     = document.getElementById('act-desc-'      + casoId)?.value.trim();
+  const clienteDesc = document.getElementById('act-cliente-' + casoId)?.value.trim();
   const resultado= document.getElementById('act-resultado-' + casoId)?.value.trim();
   const proximo  = document.getElementById('act-proximo-'   + casoId)?.value.trim();
   const visible  = document.getElementById('act-visible-'   + casoId)?.checked !== false;
 
   const actuacion = {
     tipo, descripcion: desc || TIPOS_ACTUACION.find(t=>t.key===tipo)?.label || tipo,
+    descripcionCliente: clienteDesc || desc || TIPOS_ACTUACION.find(t=>t.key===tipo)?.label || tipo,
     resultado, proximoPaso: proximo, visible,
     fecha:   new Date().toISOString(),
     usuario: SESSION?.nombre?.split(' ')[0] || 'Abogado',
@@ -8783,10 +8786,27 @@ async function guardarActuacion(casoId) {
   if (tipo === 'fallo_emitido' && cs.estado === 'activo') cs.estado = 'cerrado';
   saveGestionCasos(casos);
   await _supaUpsertCaso(cs);
-  if (visible && cs.origenConnectId) {
+  try {
+    if (_supa) {
+      await _supa.from('caso_movimientos').insert({
+        empresa_id:getEmpresaUuid(),
+        caso_id:casoId,
+        tipo,
+        titulo:TIPOS_ACTUACION.find(t=>t.key===tipo)?.label || tipo,
+        descripcion_interna:actuacion.descripcion,
+        descripcion_cliente:actuacion.descripcionCliente,
+        visible_cliente:visible,
+        notificar_cliente:visible && TIPOS_ACTUACION.find(t=>t.key===tipo)?.notifica===true,
+        fuente:'actuacion_legacy',
+        legacy_actuacion_fecha:actuacion.fecha,
+        created_by:SESSION?.authUserId || SESSION?.id || null
+      });
+    }
+  } catch(e) { console.warn('[LEAX] Movimiento procesal:',e); }
+  if (visible) {
     try {
       await _supa.functions.invoke('leax-case-progress', {
-        body:{ caso_id:casoId, tipo, descripcion:actuacion.descripcion }
+        body:{ caso_id:casoId, tipo, titulo:TIPOS_ACTUACION.find(t=>t.key===tipo)?.label||tipo, descripcion:actuacion.descripcionCliente }
       });
     } catch {}
   }
@@ -8813,7 +8833,7 @@ async function guardarActuacion(casoId) {
     }).join('');
   }
   // Reset form
-  ['act-desc-','act-resultado-','act-proximo-'].forEach(p=>{const e=document.getElementById(p+casoId);if(e)e.value='';});
+  ['act-desc-','act-cliente-','act-resultado-','act-proximo-'].forEach(p=>{const e=document.getElementById(p+casoId);if(e)e.value='';});
   const parent = document.getElementById('tipo-act-btns-' + casoId);
   if (parent) parent.querySelectorAll('.tipo-act-btn').forEach(b=>{b.style.background='var(--card-hover)';b.style.borderColor='var(--border)';b.style.color='var(--fg2)';});
   delete _tipoActSeleccionado[casoId];
