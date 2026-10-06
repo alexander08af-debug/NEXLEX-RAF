@@ -8746,6 +8746,7 @@ function openCasoWorkspace(id) {
           <button class="btn btn-ghost btn-sm" onclick="vincularProcedimientoCaso('${cs.id}')">🧩 Procedimiento</button>
           <button class="btn btn-ghost btn-sm" onclick="asignarTareaParalegal('${cs.id}')">📌 Asignar tarea</button>
           <button class="btn btn-ghost btn-sm" onclick="verFlujoCaso('${cs.id}')">🔄 Flujo</button>
+          <button class="btn btn-ghost btn-sm" onclick="abrirMensajesPortalCaso('${cs.id}')">💬 Portal</button>
           <button class="btn btn-ghost btn-sm" onclick="generarInformeCaso('${cs.id}')">📑 Informe</button>
           ${cli?`<button class="btn btn-ghost btn-sm" onclick="document.getElementById('modal-caso-ws').remove();openClienteWorkspace('${cli.id}')">👤 Ver cliente</button>`:''}
           <button class="btn btn-ghost" onclick="document.getElementById('modal-caso-ws').remove()">Cerrar</button>
@@ -9144,13 +9145,31 @@ function renderClientPortal() {
       docs+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)"><span>'+(doc.mime_type==='application/pdf'?'📕':'📄')+'</span><div style="flex:1"><b style="font-size:11px">'+escapeHtml(doc.titulo||doc.nombre_original)+'</b><div style="font-size:9px;color:var(--fg3)">'+escapeHtml(doc.categoria||'Documento')+'</div></div><button class="btn btn-ghost btn-sm" onclick="openClientPortalDocument(\''+doc.id+'\')">Ver</button></div>';
     });
     if(!docs)docs='<div style="font-size:11px;color:var(--fg3)">No hay documentos visibles.</div>';
+    let msgHtml='';
+    (d.mensajes||[]).filter(function(m){return !m.caso_id || m.caso_id===cs.id;}).forEach(function(m){
+      msgHtml+='<div class="conv-msg '+(m.autor_tipo==='cliente'?'cliente':'abogado')+'" style="margin-bottom:7px"><div class="conv-who">'+(m.autor_tipo==='cliente'?'Tú':'Equipo legal')+'</div><div>'+escapeHtml(m.mensaje)+'</div><div class="conv-time">'+(m.created_at?new Date(m.created_at).toLocaleString('es-DO',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')+'</div></div>';
+    });
+    if(!msgHtml)msgHtml='<div style="font-size:11px;color:var(--fg3)">No hay mensajes todavía.</div>';
     main='<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:12px"><b style="font-size:15px">'+escapeHtml(cs.id)+' · '+escapeHtml(cs.materia||'Proceso')+'</b><div style="font-size:10px;color:var(--fg3);margin-top:4px">'+escapeHtml(cs.subtipo||'')+' · Estado: '+escapeHtml(cs.estado||'activo')+'</div></div>'+
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"><div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px"><b style="font-size:11px">📦 Seguimiento</b><div style="margin-top:12px">'+(stages||moves)+'</div></div>'+
       '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px"><b style="font-size:11px">📁 Documentos</b><div style="margin-top:8px">'+docs+'</div></div></div>'+
-      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:12px"><b style="font-size:11px">🕒 Movimientos recientes</b>'+moves+'</div>';
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:12px"><b style="font-size:11px">🕒 Movimientos recientes</b>'+moves+'</div>'+
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:12px"><b style="font-size:11px">💬 Mensajes con tu equipo legal</b><div style="margin:10px 0;max-height:260px;overflow:auto">'+msgHtml+'</div><div style="display:flex;gap:7px"><input id="cp-message" placeholder="Escribe un mensaje..." style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:7px;padding:9px;color:var(--fg)"><button class="btn btn-accent btn-sm" onclick="sendClientPortalMessage(\''+cs.id+'\')">Enviar</button></div></div>';
   }
   root.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><div><div style="font-size:20px;font-weight:800">Hola, '+escapeHtml(cli.nombre||'Cliente')+'</div><div style="font-size:10px;color:var(--fg3)">Seguimiento: '+escapeHtml(cli.numero_seguimiento||'—')+'</div></div><button class="btn btn-ghost btn-sm" onclick="clientPortalLogout()">Cerrar sesión</button></div>'+
     '<div style="display:grid;grid-template-columns:minmax(180px,230px) minmax(0,1fr);gap:16px"><aside>'+(side||'<span style="font-size:11px;color:var(--fg3)">Sin procesos.</span>')+'</aside><main>'+main+'</main></div>';
+}
+
+async function sendClientPortalMessage(casoId) {
+  const input=document.getElementById('cp-message');
+  const mensaje=input?.value.trim();
+  if(!mensaje)return;
+  try{
+    const r=await _supa.functions.invoke('leax-client-portal',{body:{action:'message',caso_id:casoId,mensaje:mensaje}});
+    if(r.error||(r.data&&r.data.error))throw r.error||new Error(r.data.error);
+    input.value='';
+    await loadClientPortal();
+  }catch(e){alert(e?.message||'No se pudo enviar el mensaje.');}
 }
 
 async function openClientPortalDocument(id) {
@@ -9268,6 +9287,29 @@ async function verFlujoCaso(casoId) {
     const html='<div id="modal-case-flow" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(650px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px"><div style="font-size:15px;font-weight:800;margin-bottom:14px">🔄 Flujo del expediente '+escapeHtml(casoId)+'</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px"><div><b style="font-size:11px">Etapas</b><div style="margin-top:8px">'+stages+'</div></div><div><b style="font-size:11px">Tareas</b><div style="margin-top:8px">'+tasks+'</div></div></div><div style="text-align:right;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-case-flow\').remove()">Cerrar</button></div></div></div>';
     document.body.insertAdjacentHTML('beforeend',html);
   }catch(e){toast(e?.message||'No se pudo cargar el flujo','err');}
+}
+
+async function abrirMensajesPortalCaso(casoId) {
+  try{
+    const d=await _workflowInvoke('case_messages',{caso_id:casoId});
+    document.getElementById('modal-case-messages')?.remove();
+    let rows='';
+    (d.messages||[]).forEach(function(m){
+      rows+='<div class="conv-msg '+(m.autor_tipo==='cliente'?'cliente':'abogado')+'" style="margin-bottom:8px"><div class="conv-who">'+(m.autor_tipo==='cliente'?'Cliente':'Equipo legal')+'</div><div>'+escapeHtml(m.mensaje)+'</div><div class="conv-time">'+(m.created_at?new Date(m.created_at).toLocaleString('es-DO'):'')+'</div></div>';
+    });
+    if(!rows)rows='<div class="conv-empty">No hay mensajes del Portal del Cliente.</div>';
+    const html='<div id="modal-case-messages" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:16000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(650px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:20px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><b>💬 Portal · '+escapeHtml(casoId)+'</b><button class="close-btn" onclick="document.getElementById(\'modal-case-messages\').remove()">×</button></div><div style="max-height:360px;overflow:auto;margin-bottom:10px">'+rows+'</div><div style="display:flex;gap:7px"><input id="office-portal-message" placeholder="Responder al cliente..." style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:7px;padding:9px;color:var(--fg)"><button class="btn btn-accent" onclick="enviarMensajePortalCaso(\''+casoId+'\')">Enviar</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudieron cargar los mensajes','err');}
+}
+async function enviarMensajePortalCaso(casoId) {
+  const input=document.getElementById('office-portal-message'),mensaje=input?.value.trim();
+  if(!mensaje)return;
+  try{
+    await _workflowInvoke('send_case_message',{caso_id:casoId,mensaje:mensaje});
+    document.getElementById('modal-case-messages')?.remove();
+    abrirMensajesPortalCaso(casoId);
+  }catch(e){toast(e?.message||'No se pudo enviar','err');}
 }
 
 async function actualizarEtapaCaso(casoId,stageId,estado) {
