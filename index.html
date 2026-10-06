@@ -2393,7 +2393,7 @@ body.connect-public-mode #page-connect { display:flex !important; }
         <div class="nav-dropdown">
           <div class="nav-dropdown-label">Herramientas</div>
           <div class="nav-dropdown-item" onmousedown="goPage('mapa')" onclick="goPage('mapa')">🗺 Mapa Procesal</div>
-          <div class="nav-dropdown-item coming-soon" style="opacity:.4;cursor:default">📋 Modelos &amp; Plantillas</div>
+          <div class="nav-dropdown-item" onmousedown="openModelLibrary()" onclick="openModelLibrary()">📋 Modelos &amp; Plantillas</div>
           <div class="nav-dropdown-item coming-soon" style="opacity:.4;cursor:default">📝 Editor Legal</div>
         </div>
       </div>
@@ -3348,6 +3348,7 @@ body.connect-public-mode #page-connect { display:flex !important; }
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost btn-sm" onclick="toast('Adjuntado (simulado)','ok')">📎 Adjuntar</button>
+      <button class="btn btn-ghost btn-sm" onclick="guardarEditorComoModelo()">📚 Guardar como modelo</button>
       <button class="btn btn-ghost" onclick="closeModal('modal-editor')">Cerrar</button>
       <button class="btn btn-accent" onclick="saveEditor()">💾 Guardar</button>
     </div>
@@ -3371,6 +3372,8 @@ body.connect-public-mode #page-connect { display:flex !important; }
         <div class="form-group"><label>Estado</label><select id="aud-estado"><option>Pendiente</option><option>Celebrada</option><option>Aplazada</option><option>Concluida</option></select></div>
       </div>
       <div class="form-group"><label>Tipo</label><input id="aud-tipo" placeholder="Ej: Audiencia preliminar"></div>
+      <div class="form-group"><label>Expediente vinculado</label><select id="aud-caso"><option value="">— Sin vincular —</option></select></div>
+      <div class="form-group" style="display:flex;align-items:center;gap:8px"><input id="aud-visible-cliente" type="checkbox" style="width:auto;accent-color:var(--brand)"><label for="aud-visible-cliente" style="margin:0">Visible en Portal del Cliente</label></div>
       <div class="form-group"><label>Nota</label><textarea id="aud-nota" rows="3" placeholder="Notas..."></textarea></div>
     </div>
     <div class="modal-footer">
@@ -3897,6 +3900,17 @@ body.connect-public-mode #page-connect { display:flex !important; }
   registerAction({ id:'generar-token-portal', nombre:'Generar token portal cliente', modulo:'gestion', roles:['admin','abogado','superadmin'], activo:true });
   registerAction({ id:'configurar-notificaciones-email', nombre:'Configurar avisos por correo', modulo:'connect', roles:['admin','abogado','paralegal','superadmin'], activo:true });
   registerAction({ id:'responder-consulta-multicanal', nombre:'Responder consulta por LEAX/correo', modulo:'connect', roles:['admin','abogado','superadmin'], activo:true });
+  /* Fase 2.1 — Portal Cliente + Expediente Digital (aditiva) */
+  registerModule({ id:'portal_cliente', nombre:'Portal del Cliente', version:'1.0.0', descripcion:'Acceso autenticado del cliente a sus procesos, seguimiento, documentos visibles y mensajes.', roles:['cliente_portal'], activo:true, estado:'activo', dependencias:['core','gestion'], meta:{ supabase:true, identidadSeparada:true } });
+  registerModule({ id:'expediente_digital', nombre:'Expediente Digital', version:'1.0.0', descripcion:'Documentos privados por cliente/caso, visibilidad controlada y consulta segura.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['gestion'], meta:{ bucket:'leax-documentos', privado:true } });
+  registerModule({ id:'biblioteca_modelos', nombre:'Biblioteca de Modelos', version:'1.0.0', descripcion:'Modelos maestros reutilizables vinculables al Mapa y a tareas sin alterar el original.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['mapa','expediente_digital'] });
+  registerModule({ id:'flujo_paralegal', nombre:'Flujo Abogado–Paralegal', version:'1.0.0', descripcion:'Asignación de modelos, borradores, revisión, correcciones y aprobación.', roles:['admin','abogado','paralegal','superadmin'], activo:true, estado:'activo', dependencias:['gestion','biblioteca_modelos'] });
+  registerModule({ id:'seguimiento_procesal', nombre:'Seguimiento Procesal', version:'1.0.0', descripcion:'Etapas y movimientos del expediente con visibilidad separada para cliente.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['gestion','portal_cliente','mapa'] });
+  registerRoute({ id:'portal-cliente', path:'portal', modulo:'portal_cliente', roles:['cliente_portal'] });
+  registerAction({ id:'habilitar-portal-cliente', nombre:'Habilitar cuenta Portal del Cliente', modulo:'portal_cliente', roles:['admin','abogado','superadmin'], activo:true });
+  registerAction({ id:'publicar-movimiento-cliente', nombre:'Publicar movimiento al cliente', modulo:'seguimiento_procesal', roles:['admin','abogado','superadmin'], activo:true });
+  registerAction({ id:'gestionar-visibilidad-documento', nombre:'Gestionar visibilidad de documento', modulo:'expediente_digital', roles:['admin','abogado','superadmin'], activo:true });
+  registerAction({ id:'asignar-modelo-paralegal', nombre:'Asignar copia de modelo a paralegal', modulo:'flujo_paralegal', roles:['admin','abogado','superadmin'], activo:true });
 
   /* SQL Supabase requerido para el módulo Gestión:
      CREATE TABLE clientes (
@@ -3923,7 +3937,7 @@ body.connect-public-mode #page-connect { display:flex !important; }
   */
   registerModule({ id:'clientes',      nombre:'Clientes',               version:'0.0.0', descripcion:'CRM y gestión de clientes del despacho.',                   roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
   registerModule({ id:'facturacion',   nombre:'Facturación',            version:'0.0.0', descripcion:'Facturación, honorarios y pagos.',                          roles:['admin','superadmin'],           activo:false, estado:'pendiente' });
-  registerModule({ id:'documentos',    nombre:'Gestión Documental',     version:'0.0.0', descripcion:'Almacenamiento y gestión de documentos legales.',            roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
+  registerModule({ id:'documentos',    nombre:'Gestión Documental',     version:'1.0.0', descripcion:'Almacenamiento y gestión de documentos legales conectado al Expediente Digital.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['gestion'], meta:{storage:'leax-documentos'} });
   registerModule({ id:'ia_juridica',   nombre:'IA Jurídica',            version:'0.0.0', descripcion:'Análisis legal e inteligencia artificial aplicada.',        roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
   registerModule({ id:'firma',         nombre:'Firma Electrónica',      version:'0.0.0', descripcion:'Firma electrónica de documentos y contratos.',              roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
   registerModule({ id:'informes',      nombre:'Informes Automáticos',   version:'0.0.0', descripcion:'Generación automática de informes y reportes.',             roles:['admin','superadmin'],           activo:false, estado:'pendiente' });
@@ -4259,6 +4273,8 @@ function _audRowToLocal(row) {
     estado: row.estado || 'Pendiente',
     nota: row.nota || '',
     usuarioId: row.usuario_id || null,
+    casoId: row.metadata?.caso_id || '',
+    visibleCliente: row.metadata?.visible_cliente === true,
   };
 }
 
@@ -4275,7 +4291,7 @@ async function _supaInsertAudiencia(fecha, a) {
       estado: a.estado || 'Pendiente',
       nota: a.nota || '',
       usuario_id: SESSION.id || null,
-      metadata: {},
+      metadata: { caso_id:a.casoId||null, visible_cliente:a.visibleCliente===true },
       updated_at: new Date().toISOString(),
     }).select('id').single();
     if (error) throw error;
@@ -4306,7 +4322,7 @@ async function _syncAudienciasSupabase() {
   if (!DB_AUDIENCIAS[eid]) DB_AUDIENCIAS[eid] = {};
   try {
     let { data, error } = await _supa.from('audiencias')
-      .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,created_at,updated_at')
+      .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,metadata,created_at,updated_at')
       .eq('empresa_id', empresaUuid)
       .order('fecha', { ascending:true })
       .order('hora', { ascending:true });
@@ -4322,7 +4338,7 @@ async function _syncAudienciasSupabase() {
         }
       }
       const reload = await _supa.from('audiencias')
-        .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,created_at,updated_at')
+        .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,metadata,created_at,updated_at')
         .eq('empresa_id', empresaUuid)
         .order('fecha', { ascending:true })
         .order('hora', { ascending:true });
@@ -4693,6 +4709,7 @@ function iniciarSesion(user) {
   if (smEl && smEl.value === '') smEl.value = new Date().getMonth();
 
   buildNav();
+  ensureWorkflowUI();
   renderUserPill();
   updateConfigPage();
   _syncLegalKnowledge();
@@ -4730,14 +4747,20 @@ async function doLogout() {
 
 async function initSupabaseAuth() {
   if (!_supa) return;
+  const portalRoute = new URLSearchParams(location.search).get('portal') === '1';
   try {
     const { data, error } = await _supa.auth.getSession();
+    if (portalRoute) {
+      showClientPortalEntry();
+      if (!error && data?.session?.user) await loadClientPortal();
+      return;
+    }
     if (error || !data?.session?.user) return;
     const user = await _loadSupabaseUserProfile(data.session.user);
     iniciarSesion(user);
   } catch (e) {
     console.warn('[LEAX] Sesión previa inválida:', e);
-    try { await _supa.auth.signOut(); } catch {}
+    if (!portalRoute) { try { await _supa.auth.signOut(); } catch {} }
   }
 }
 
@@ -5371,6 +5394,11 @@ function abrirAddAud(fecha) {
   document.getElementById('aud-title').textContent = `Nueva Audiencia — ${fecha}`;
   ['aud-cliente','aud-hora','aud-tipo','aud-nota'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('aud-estado').value = 'Pendiente';
+  const caseSel=document.getElementById('aud-caso');
+  if(caseSel){
+    caseSel.innerHTML='<option value="">— Sin vincular —</option>'+getGestionCasos().filter(function(x){return x.estado!=='cerrado';}).map(function(x){return '<option value="'+x.id+'">'+escapeHtml(x.id+' · '+(x.materia||'Caso'))+'</option>';}).join('');
+  }
+  const vis=document.getElementById('aud-visible-cliente'); if(vis)vis.checked=false;
   closeModal('modal-ver-aud'); openModal('modal-add-aud');
   document.getElementById('ctx-menu').style.display = 'none';
 }
@@ -5383,8 +5411,10 @@ function saveAud() {
   const tipo   = document.getElementById('aud-tipo').value.trim() || 'General';
   const estado = document.getElementById('aud-estado').value;
   const nota   = document.getElementById('aud-nota').value.trim();
+  const casoId = document.getElementById('aud-caso')?.value || '';
+  const visibleCliente = document.getElementById('aud-visible-cliente')?.checked === true;
   if (!auds[audDate]) auds[audDate] = [];
-  const nuevaAudiencia = { cliente:cli, hora, tipo, estado, nota, usuarioId:SESSION.id };
+  const nuevaAudiencia = { cliente:cli, hora, tipo, estado, nota, usuarioId:SESSION.id, casoId, visibleCliente };
   auds[audDate].push(nuevaAudiencia);
   _supaInsertAudiencia(audDate, nuevaAudiencia).then(id => { if (id) nuevaAudiencia._dbId = id; });
   // Guardar cliente en historial de autocompletado
@@ -6321,7 +6351,7 @@ const _supa = (typeof supabase !== 'undefined') ? supabase.createClient(_SUPA_UR
   realtime: { params: { eventsPerSecond: 2 } },
 }) : null;
 
-initSupabaseAuth();
+setTimeout(()=>initSupabaseAuth(),0);
 
 /* Convierte objeto consulta LEAX | SJT → fila Supabase */
 function _consultaToRow(c) {
@@ -6373,7 +6403,11 @@ function _rowToConsulta(row) {
     fechaRecibido:    row.fecha_creacion || new Date().toISOString(),
     fechaLectura:     '',
     fechaRespuesta:   '',
-    fechaAsignacion:  ''
+    fechaAsignacion:  '',
+    convertidaEnCaso: row.convertida_en_caso === true,
+    clienteId:        row.cliente_id || null,
+    casoId:           row.caso_id || null,
+    fechaConversion:  row.fecha_conversion || null
   });
 }
 
@@ -6521,7 +6555,7 @@ async function deleteLegalDocument(documento) {
 async function _supaGetConsultas() {
   if (!_supa || !can('write')) return [];
   try {
-    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,descripcion,provincia,nombre,telefono,whatsapp,email,estado,abogado_asignado,observaciones,empresa_id,leida,fecha_creacion,fecha_actualizacion').order('fecha_creacion', { ascending: false });
+    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,descripcion,provincia,nombre,telefono,whatsapp,email,estado,abogado_asignado,observaciones,empresa_id,leida,fecha_creacion,fecha_actualizacion,convertida_en_caso,cliente_id,caso_id,fecha_conversion').order('fecha_creacion', { ascending: false });
     if (error) { console.warn('[LEAX | SJT] Supabase select error:', error.message); return []; }
     return (data || []).map(_rowToConsulta);
   } catch(e) {
@@ -7025,6 +7059,13 @@ async function loadPublicTracking() {
           <div style="font-size:10px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.06em;margin-top:12px">Etapas y actuaciones visibles</div>
           <div>${actHtml}</div>
         </div>`);
+    }
+    if(data.portal?.available){
+      statusBox.insertAdjacentHTML('beforeend',
+        '<div class="track-result-card" style="margin-top:10px;border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.05)">'+
+        '<div style="font-size:12px;font-weight:800;color:var(--green);margin-bottom:4px">🔐 Tu Portal del Cliente está disponible</div>'+
+        '<div style="font-size:10.5px;color:var(--fg2);line-height:1.5;margin-bottom:9px">Tu consulta ya forma parte de un servicio contratado. En el portal podrás ver todos tus procesos, movimientos y documentos que el abogado publique.</div>'+
+        '<a class="btn btn-green btn-sm" href="?portal=1">Entrar al Portal del Cliente</a></div>');
     }
 
     const msgs=Array.isArray(data.mensajes)?data.mensajes:[];
@@ -7747,6 +7788,12 @@ function _rowToGestionCliente(row) {
     notas: row.notas || '',
     tokenPortal: row.token_portal || null,
     origenConnectId: row.origen_connect_id || null,
+    numeroSeguimiento: row.numero_seguimiento || row.origen_connect_id || null,
+    portalActivo: row.portal_activo === true,
+    portalHabilitadoAt: row.portal_habilitado_at || null,
+    origen: row.origen || (row.origen_connect_id ? 'connect' : 'manual'),
+    direccion: row.direccion || '',
+    abogadoResponsableUserId: row.abogado_responsable_user_id || null,
     empresaId: row.empresa_id || getEmpresaUuid(),
     creadoPor: row.creado_por || '',
     favorito: row.favorito === true,
@@ -7766,7 +7813,12 @@ function _rowToGestionCaso(row) {
     numeroPJ: row.numero_pj || '',
     observaciones: row.observaciones || '',
     abogado: row.abogado || '',
+    abogadoUserId: row.abogado_user_id || null,
     origenConnectId: row.origen_connect_id || null,
+    procedimientoKey: row.procedimiento_key || null,
+    procedimientoNombre: row.procedimiento_nombre || '',
+    portalVisible: row.portal_visible !== false,
+    etapaActual: row.etapa_actual || '',
     fechaApertura: row.fecha_apertura || '',
     estado: row.estado || 'activo',
     origen: row.origen || 'manual',
@@ -7789,6 +7841,12 @@ async function _supaUpsertCliente(c) {
       favorito: c.favorito===true, archivado: c.archivado===true,
       origen_connect_id: c.origenConnectId||null,
       token_portal: c.tokenPortal||null,
+      numero_seguimiento: c.numeroSeguimiento||c.origenConnectId||null,
+      portal_activo: c.portalActivo===true,
+      portal_habilitado_at: c.portalHabilitadoAt||null,
+      origen: c.origen||(c.origenConnectId?'connect':'manual'),
+      direccion: c.direccion||'',
+      abogado_responsable_user_id: c.abogadoResponsableUserId||null,
       fecha_creacion: c.fechaCreacion||new Date().toISOString(),
     };
     const { error } = await _supa.from('clientes').upsert(row);
@@ -7805,7 +7863,12 @@ async function _supaUpsertCaso(cs) {
       subtipo: cs.subtipo||'', tribunal: cs.tribunal||'', contraparte: cs.contraparte||'',
       numero_pj: cs.numeroPJ||'', observaciones: cs.observaciones||'',
       estado: cs.estado||'activo', abogado: cs.abogado||'',
+      abogado_user_id: cs.abogadoUserId||null,
       origen: cs.origen||'manual', origen_connect_id: cs.origenConnectId||null,
+      procedimiento_key: cs.procedimientoKey||null,
+      procedimiento_nombre: cs.procedimientoNombre||null,
+      portal_visible: cs.portalVisible!==false,
+      etapa_actual: cs.etapaActual||null,
       actuaciones: cs.actuaciones||[],
       fecha_apertura: cs.fechaApertura||'',
       fecha_creacion: cs.fechaCreacion||new Date().toISOString(),
@@ -7822,10 +7885,10 @@ async function _syncGestionSupabase() {
   try {
     const [clRes, csRes] = await Promise.all([
       _supa.from('clientes')
-        .select('id,nombre,tipo,telefono,whatsapp,email,documento,notas,token_portal,origen_connect_id,empresa_id,creado_por,favorito,archivado,fecha_creacion')
+        .select('id,nombre,tipo,telefono,whatsapp,email,documento,notas,token_portal,origen_connect_id,numero_seguimiento,portal_activo,portal_habilitado_at,origen,direccion,abogado_responsable_user_id,empresa_id,creado_por,favorito,archivado,fecha_creacion')
         .order('fecha_creacion', { ascending:false }),
       _supa.from('casos')
-        .select('id,cliente_id,empresa_id,materia,subtipo,tribunal,contraparte,numero_pj,observaciones,abogado,origen_connect_id,fecha_apertura,estado,origen,actuaciones,fecha_creacion,ultima_actualizacion')
+        .select('id,cliente_id,empresa_id,materia,subtipo,tribunal,contraparte,numero_pj,observaciones,abogado,abogado_user_id,origen_connect_id,procedimiento_key,procedimiento_nombre,portal_visible,etapa_actual,fecha_apertura,estado,origen,actuaciones,fecha_creacion,ultima_actualizacion')
         .order('fecha_creacion', { ascending:false }),
     ]);
 
@@ -8217,6 +8280,19 @@ function openClienteWorkspace(id) {
           ${c.notas?`<div style="grid-column:1/-1"><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Notas internas</div><div style="font-size:12px;color:var(--fg2);line-height:1.6">${escapeHtml(c.notas)}</div></div>`:''}
         </div>
 
+        <!-- Portal del cliente autenticado -->
+        <div style="padding:14px 28px;border-bottom:1px solid var(--border);background:rgba(52,211,153,.035);flex-shrink:0">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-size:11px;font-weight:800;color:var(--fg2);margin-bottom:3px">🔐 Portal del Cliente · Cuenta autenticada</div>
+              ${c.portalActivo ? `<div style="font-size:10.5px;color:var(--fg3)">Activo · Seguimiento: <strong style="color:var(--green)">${escapeHtml(c.numeroSeguimiento||c.origenConnectId||'—')}</strong></div>` : `<div style="font-size:10.5px;color:var(--fg3)">Aún no habilitado. El cliente podrá crear su cuenta con su correo y número de seguimiento.</div>`}
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              ${c.portalActivo ? `<button class="btn btn-ghost btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.origin+location.pathname+'?portal=1').then(()=>toast('Acceso al portal copiado','ok'))">📋 Copiar acceso</button>` : `<button class="btn btn-green btn-sm" onclick="habilitarPortalCliente('${c.id}')">🔐 Habilitar Portal</button>`}
+            </div>
+          </div>
+        </div>
+
         <!-- Portal del cliente -->
         <div style="padding:12px 28px;border-bottom:1px solid var(--border);background:rgba(79,124,255,.03);flex-shrink:0">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -8312,6 +8388,10 @@ function openGestionNuevoCliente() {
           </div>
           <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Correo</div><input id="gc-email" type="email" placeholder="cliente@email.com" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;font-family:inherit;outline:none;box-sizing:border-box"></div>
           <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Cédula / Pasaporte</div><input id="gc-doc" type="text" placeholder="001-XXXXXXX-X" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;font-family:inherit;outline:none;box-sizing:border-box"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Origen</div><select id="gc-origen" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:12px"><option value="manual">Directo / oficina</option><option value="referido">Referido</option><option value="whatsapp">WhatsApp</option><option value="telefono">Teléfono</option><option value="otro">Otro</option></select></div>
+            <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Dirección</div><input id="gc-direccion" type="text" placeholder="Opcional" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;box-sizing:border-box"></div>
+          </div>
           <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Notas internas</div><textarea id="gc-notas" rows="2" placeholder="Observaciones privadas sobre el cliente..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;font-family:inherit;outline:none;resize:vertical;box-sizing:border-box"></textarea></div>
         </div>
         <div style="display:flex;gap:10px;margin-top:22px;justify-content:flex-end">
@@ -8340,6 +8420,11 @@ function saveGestionNuevoCliente() {
     favorito:      false,
     archivado:     false,
     tokenPortal:   null,
+    numeroSeguimiento:null,
+    portalActivo:false,
+    origen:         document.getElementById('gc-origen')?.value || 'manual',
+    direccion:      document.getElementById('gc-direccion')?.value.trim() || '',
+    abogadoResponsableUserId: SESSION?.authUserId || SESSION?.id || null,
     empresaId:      getEmpresaUuid(),
     creadoPor:     SESSION?.email     || '',
     fechaCreacion: new Date().toISOString(),
@@ -8469,8 +8554,13 @@ function saveNuevoCaso(clienteId) {
     observaciones: document.getElementById('nc-obs')?.value.trim()         || '',
     estado:        'activo',
     abogado:       SESSION?.nombre || '',
+    abogadoUserId: SESSION?.authUserId || SESSION?.id || null,
     origen:        'manual',
     origenConnectId: null,
+    portalVisible: true,
+    procedimientoKey: null,
+    procedimientoNombre: '',
+    etapaActual: '',
     actuaciones:   [],
     fechaApertura: new Date().toLocaleDateString('es-DO', { day:'2-digit', month:'2-digit', year:'numeric' }),
     fechaCreacion: new Date().toISOString(),
@@ -8488,7 +8578,7 @@ function saveNuevoCaso(clienteId) {
 }
 
 /* ── Convertir consulta Connect → Cliente + Caso ── */
-function convertirConsultaEnCaso(consultaId) {
+async function convertirConsultaEnCaso(consultaId) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const inbox = getInboxConsultas();
   const consulta = inbox.find(x => x.id === consultaId);
@@ -8510,6 +8600,10 @@ function convertirConsultaEnCaso(consultaId) {
     archivado:      false,
     tokenPortal:    null,
     origenConnectId:consultaId,
+    numeroSeguimiento:consultaId,
+    portalActivo:false,
+    origen:'connect',
+    abogadoResponsableUserId:SESSION?.authUserId||SESSION?.id||null,
     empresaId:      getEmpresaUuid(),
     creadoPor:      SESSION?.email     || '',
     fechaCreacion:  new Date().toISOString(),
@@ -8529,8 +8623,13 @@ function convertirConsultaEnCaso(consultaId) {
     observaciones: consulta.descripcion || '',
     estado:        'activo',
     abogado:       consulta.abogadoAsignado || SESSION?.nombre || '',
+    abogadoUserId: SESSION?.authUserId || SESSION?.id || null,
     origen:        'connect',
     origenConnectId: consultaId,
+    portalVisible: true,
+    procedimientoKey: null,
+    procedimientoNombre: '',
+    etapaActual: '',
     actuaciones:   [{
       tipo:        'otro',
       descripcion: `Caso originado desde LEAX | SJT Connect. Ref. ${consultaId}. Provincia: ${consulta.provincia||'—'}.`,
@@ -8545,7 +8644,14 @@ function convertirConsultaEnCaso(consultaId) {
   const casos = getGestionCasos();
   casos.unshift(nuevoCaso);
   saveGestionCasos(casos);
-  _supaUpsertCaso(nuevoCaso);
+  await _supaUpsertCaso(nuevoCaso);
+  await _supaUpsertCliente(nuevoCliente);
+  try {
+    if (_supa) {
+      await _supa.from('consultas').update({convertida_en_caso:true,cliente_id:nuevoCliente.id,caso_id:nuevoCaso.id,fecha_conversion:new Date().toISOString(),convertido_por:SESSION?.authUserId||SESSION?.id||null,fecha_actualizacion:new Date().toISOString()}).eq('id',consultaId);
+      await _supa.from('documentos').update({cliente_id:nuevoCliente.id,caso_id:nuevoCaso.id}).eq('consulta_id',consultaId);
+    }
+  } catch(e) { console.warn('[LEAX] Persistencia de conversión:',e); }
 
   // Marcar consulta como convertida
   const inboxList = getInboxConsultas();
@@ -8629,7 +8735,8 @@ function openCasoWorkspace(id) {
           <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px" id="tipo-act-btns-${cs.id}">
             ${TIPOS_ACTUACION.map(t=>`<button class="tipo-act-btn" data-tipo="${t.key}" onmousedown="selectTipoAct(this,'${cs.id}')" style="background:var(--card-hover);border:1px solid var(--border);border-radius:var(--radius);padding:5px 11px;font-size:11px;font-weight:600;color:var(--fg2);cursor:pointer;font-family:inherit;transition:all .12s;user-select:none">${t.icon} ${t.label}</button>`).join('')}
           </div>
-          <textarea id="act-desc-${cs.id}" rows="2" placeholder="Descripción de la actuación..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:8px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none;resize:none;box-sizing:border-box;margin-bottom:7px"></textarea>
+          <textarea id="act-desc-${cs.id}" rows="2" placeholder="Descripción interna de la actuación..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:8px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none;resize:none;box-sizing:border-box;margin-bottom:7px"></textarea>
+          <textarea id="act-cliente-${cs.id}" rows="2" placeholder="Descripción para el cliente (opcional)..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:8px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none;resize:none;box-sizing:border-box;margin-bottom:7px"></textarea>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
             <input id="act-resultado-${cs.id}"  placeholder="Resultado (opcional)..."   style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none">
             <input id="act-proximo-${cs.id}"    placeholder="Próximo paso (opcional)..." style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:7px 11px;color:var(--fg);font-size:12px;font-family:inherit;outline:none">
@@ -8654,6 +8761,20 @@ function openCasoWorkspace(id) {
           <span style="font-size:11px;color:var(--fg3);margin-left:auto">Apertura: ${escapeHtml(cs.fechaApertura||'—')}</span>
         </div>
 
+        <!-- Expediente Digital -->
+        <div style="padding:14px 28px;border-bottom:1px solid var(--border);background:rgba(79,124,255,.025)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+            <div><div style="font-size:11px;font-weight:800;color:var(--fg2)">📁 Expediente Digital</div><div style="font-size:10px;color:var(--fg3)">Archivos privados. Publica solo lo que el cliente deba ver.</div></div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <select id="doc-cat-${cs.id}" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:6px;color:var(--fg);font-size:10px"><option value="contrato">Contrato</option><option value="demanda">Demanda/Querella</option><option value="recurso">Recurso</option><option value="sentencia">Sentencia</option><option value="acto">Acto</option><option value="prueba">Prueba</option><option value="identificacion">Identificación</option><option value="otro" selected>Otro</option></select>
+              <label style="font-size:10px;color:var(--fg2);display:flex;gap:5px;align-items:center"><input id="doc-visible-${cs.id}" type="checkbox" style="accent-color:var(--brand)"> Visible cliente</label>
+              <input id="doc-file-${cs.id}" type="file" style="max-width:190px;font-size:10px;color:var(--fg3)">
+              <button class="btn btn-accent btn-sm" onclick="subirDocumentoCaso('${cs.id}')">Subir</button>
+            </div>
+          </div>
+          <div id="case-docs-${cs.id}" style="font-size:11px;color:var(--fg3)">Cargando documentos…</div>
+        </div>
+
         <!-- Cronología -->
         <div style="padding:16px 28px 12px;flex:1;overflow-y:auto;min-height:200px">
           <div style="font-size:11px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">📋 Cronología (${acts.length} actuaciones)</div>
@@ -8661,7 +8782,11 @@ function openCasoWorkspace(id) {
         </div>
 
         <!-- Footer -->
-        <div style="padding:12px 28px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-shrink:0">
+        <div style="padding:12px 28px;border-top:1px solid var(--border);display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;flex-shrink:0">
+          <button class="btn btn-ghost btn-sm" onclick="vincularProcedimientoCaso('${cs.id}')">🧩 Procedimiento</button>
+          <button class="btn btn-ghost btn-sm" onclick="asignarTareaParalegal('${cs.id}')">📌 Asignar tarea</button>
+          <button class="btn btn-ghost btn-sm" onclick="verFlujoCaso('${cs.id}')">🔄 Flujo</button>
+          <button class="btn btn-ghost btn-sm" onclick="abrirMensajesPortalCaso('${cs.id}')">💬 Portal</button>
           <button class="btn btn-ghost btn-sm" onclick="generarInformeCaso('${cs.id}')">📑 Informe</button>
           ${cli?`<button class="btn btn-ghost btn-sm" onclick="document.getElementById('modal-caso-ws').remove();openClienteWorkspace('${cli.id}')">👤 Ver cliente</button>`:''}
           <button class="btn btn-ghost" onclick="document.getElementById('modal-caso-ws').remove()">Cerrar</button>
@@ -8669,6 +8794,7 @@ function openCasoWorkspace(id) {
       </div>
     </div>`;
   document.body.insertAdjacentHTML('beforeend', html);
+  loadCaseDocuments(cs.id);
 }
 
 /* ── Tipos de actuación ── */
@@ -8700,12 +8826,14 @@ async function guardarActuacion(casoId) {
   const tipo = _tipoActSeleccionado[casoId];
   if (!tipo) { toast('Selecciona el tipo de actuación', 'err'); return; }
   const desc     = document.getElementById('act-desc-'      + casoId)?.value.trim();
+  const clienteDesc = document.getElementById('act-cliente-' + casoId)?.value.trim();
   const resultado= document.getElementById('act-resultado-' + casoId)?.value.trim();
   const proximo  = document.getElementById('act-proximo-'   + casoId)?.value.trim();
   const visible  = document.getElementById('act-visible-'   + casoId)?.checked !== false;
 
   const actuacion = {
     tipo, descripcion: desc || TIPOS_ACTUACION.find(t=>t.key===tipo)?.label || tipo,
+    descripcionCliente: clienteDesc || desc || TIPOS_ACTUACION.find(t=>t.key===tipo)?.label || tipo,
     resultado, proximoPaso: proximo, visible,
     fecha:   new Date().toISOString(),
     usuario: SESSION?.nombre?.split(' ')[0] || 'Abogado',
@@ -8721,10 +8849,27 @@ async function guardarActuacion(casoId) {
   if (tipo === 'fallo_emitido' && cs.estado === 'activo') cs.estado = 'cerrado';
   saveGestionCasos(casos);
   await _supaUpsertCaso(cs);
-  if (visible && cs.origenConnectId) {
+  try {
+    if (_supa) {
+      await _supa.from('caso_movimientos').insert({
+        empresa_id:getEmpresaUuid(),
+        caso_id:casoId,
+        tipo,
+        titulo:TIPOS_ACTUACION.find(t=>t.key===tipo)?.label || tipo,
+        descripcion_interna:actuacion.descripcion,
+        descripcion_cliente:actuacion.descripcionCliente,
+        visible_cliente:visible,
+        notificar_cliente:visible && TIPOS_ACTUACION.find(t=>t.key===tipo)?.notifica===true,
+        fuente:'actuacion_legacy',
+        legacy_actuacion_fecha:actuacion.fecha,
+        created_by:SESSION?.authUserId || SESSION?.id || null
+      });
+    }
+  } catch(e) { console.warn('[LEAX] Movimiento procesal:',e); }
+  if (visible) {
     try {
       await _supa.functions.invoke('leax-case-progress', {
-        body:{ caso_id:casoId, tipo, descripcion:actuacion.descripcion }
+        body:{ caso_id:casoId, tipo, titulo:TIPOS_ACTUACION.find(t=>t.key===tipo)?.label||tipo, descripcion:actuacion.descripcionCliente }
       });
     } catch {}
   }
@@ -8751,7 +8896,7 @@ async function guardarActuacion(casoId) {
     }).join('');
   }
   // Reset form
-  ['act-desc-','act-resultado-','act-proximo-'].forEach(p=>{const e=document.getElementById(p+casoId);if(e)e.value='';});
+  ['act-desc-','act-cliente-','act-resultado-','act-proximo-'].forEach(p=>{const e=document.getElementById(p+casoId);if(e)e.value='';});
   const parent = document.getElementById('tipo-act-btns-' + casoId);
   if (parent) parent.querySelectorAll('.tipo-act-btn').forEach(b=>{b.style.background='var(--card-hover)';b.style.borderColor='var(--border)';b.style.color='var(--fg2)';});
   delete _tipoActSeleccionado[casoId];
@@ -8824,6 +8969,479 @@ LEAX | SJT Case Management · Confidencial · Grupo RAF
       </div>
     </div>`;
   document.body.insertAdjacentHTML('beforeend', html);
+}
+
+
+/* ══════════════════════════════════════════
+   LEAX | SJT — Portal Cliente + Expediente
+   Fase 2.1 — extensión aditiva
+══════════════════════════════════════════ */
+async function habilitarPortalCliente(clienteId) {
+  if (!can('write') || !_supa) { toast('Sin permiso','err'); return; }
+  const cli = getGestionClientes().find(function(x){ return x.id===clienteId; });
+  if (!cli || !cli.email) { toast('El cliente necesita un correo registrado para activar su cuenta.','err'); return; }
+  try {
+    const r = await _supa.functions.invoke('leax-client-portal-admin',{body:{action:'enable',cliente_id:clienteId}});
+    if (r.error || (r.data && r.data.error)) throw r.error || new Error(r.data.error);
+    cli.portalActivo = true;
+    cli.numeroSeguimiento = r.data.seguimiento;
+    cli.portalHabilitadoAt = new Date().toISOString();
+    saveGestionClientes(getGestionClientes());
+    document.getElementById('modal-cliente-ws')?.remove();
+    openClienteWorkspace(clienteId);
+    toast(r.data.email_sent ? 'Portal habilitado e invitación enviada' : 'Portal habilitado. Comparte el acceso con el cliente.','ok');
+  } catch(e) { toast(e?.message || 'No se pudo habilitar el portal','err'); }
+}
+
+async function loadCaseDocuments(casoId) {
+  const el = document.getElementById('case-docs-'+casoId);
+  if (!el || !_supa) return;
+  try {
+    const r = await _supa.from('documentos')
+      .select('id,titulo,nombre_original,categoria,mime_type,visible_cliente,estado_documento,created_at')
+      .eq('caso_id',casoId).order('created_at',{ascending:false});
+    if (r.error) throw r.error;
+    if (!r.data || !r.data.length) {
+      el.innerHTML = '<div style="padding:8px 0;color:var(--fg3);font-size:11px">Sin documentos en este expediente.</div>';
+      return;
+    }
+    el.innerHTML = r.data.map(function(d){
+      const icon = d.mime_type==='application/pdf' ? '📕' : '📄';
+      const vis = d.visible_cliente ? '👁 Visible cliente' : '🔒 Interno';
+      const action = d.visible_cliente ? 'Ocultar' : 'Publicar';
+      const next = d.visible_cliente ? 'false' : 'true';
+      return '<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--border)">'+
+        '<span>'+icon+'</span>'+
+        '<div style="flex:1;min-width:0"><div style="font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+escapeHtml(d.titulo||d.nombre_original)+'</div>'+
+        '<div style="font-size:9.5px;color:var(--fg3)">'+escapeHtml(d.categoria||'otro')+' · '+vis+'</div></div>'+
+        '<button class="btn btn-ghost btn-sm" onclick="abrirDocumentoInterno(\''+d.id+'\')">Ver</button>'+
+        '<button class="btn btn-ghost btn-sm" onclick="toggleDocumentoCliente(\''+d.id+'\',\''+casoId+'\','+next+')">'+action+'</button></div>';
+    }).join('');
+  } catch(e) { el.textContent='No se pudieron cargar los documentos.'; }
+}
+
+async function subirDocumentoCaso(casoId) {
+  if (!can('write') || !_supa) return;
+  const input=document.getElementById('doc-file-'+casoId);
+  const file=input && input.files && input.files[0];
+  if(!file){toast('Selecciona un archivo','err');return;}
+  if(file.size>10485760){toast('El archivo supera 10 MB','err');return;}
+  const cs=getGestionCasos().find(function(x){return x.id===casoId;});
+  const cli=cs && getGestionClientes().find(function(x){return x.id===cs.clienteId;});
+  if(!cs||!cli)return;
+  const safe=(file.name||'archivo').replace(/[^a-zA-Z0-9._-]+/g,'-').slice(-140);
+  const path=getEmpresaUuid()+'/cases/'+casoId+'/'+crypto.randomUUID()+'-'+safe;
+  try{
+    const up=await _supa.storage.from('leax-documentos').upload(path,file,{contentType:file.type||'application/octet-stream',upsert:false});
+    if(up.error)throw up.error;
+    const visible=document.getElementById('doc-visible-'+casoId)?.checked===true;
+    const cat=document.getElementById('doc-cat-'+casoId)?.value||'otro';
+    const ins=await _supa.from('documentos').insert({
+      empresa_id:getEmpresaUuid(),modulo:'expediente',cliente_id:cli.id,caso_id:casoId,
+      nombre_original:file.name,titulo:file.name,storage_path:path,mime_type:file.type||'application/octet-stream',
+      tamano:file.size,categoria:cat,visible_cliente:visible,estado_documento:'recibido',
+      subido_por:SESSION?.authUserId||SESSION?.id||null
+    });
+    if(ins.error)throw ins.error;
+    input.value='';
+    await loadCaseDocuments(casoId);
+    toast('Documento agregado al expediente','ok');
+  }catch(e){toast(e?.message||'No se pudo subir el documento','err');}
+}
+
+async function toggleDocumentoCliente(docId,casoId,visible) {
+  if(!can('write')||!_supa)return;
+  const r=await _supa.from('documentos').update({visible_cliente:visible}).eq('id',docId);
+  if(r.error){toast(r.error.message,'err');return;}
+  await loadCaseDocuments(casoId);
+  toast(visible?'Documento visible para cliente':'Documento ocultado del portal','ok');
+}
+
+async function abrirDocumentoInterno(docId) {
+  const r=await _supa.from('documentos').select('storage_path,mime_type,titulo,nombre_original').eq('id',docId).maybeSingle();
+  if(r.error||!r.data){toast('Documento no disponible','err');return;}
+  const s=await _supa.storage.from('leax-documentos').createSignedUrl(r.data.storage_path,300);
+  if(s.error||!s.data?.signedUrl){toast('No se pudo abrir','err');return;}
+  abrirVisorDocumento(s.data.signedUrl,r.data.titulo||r.data.nombre_original,r.data.mime_type);
+}
+
+function abrirVisorDocumento(url,title,mime) {
+  document.getElementById('leax-doc-viewer')?.remove();
+  const src=(mime||'').includes('pdf') ? url+'#toolbar=0' : url;
+  const html='<div id="leax-doc-viewer" style="position:fixed;inset:0;background:rgba(0,0,0,.86);z-index:20000;display:flex;align-items:center;justify-content:center;padding:20px">'+
+    '<div style="width:min(1000px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;overflow:hidden">'+
+    '<div style="padding:11px 14px;display:flex;justify-content:space-between;align-items:center"><strong>'+escapeHtml(title||'Documento')+'</strong>'+
+    '<button class="close-btn" onclick="document.getElementById(\'leax-doc-viewer\').remove()">×</button></div>'+
+    '<iframe src="'+src+'" style="width:100%;height:72vh;border:0;background:#fff"></iframe></div></div>';
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+function showClientPortalEntry() {
+  document.body.classList.remove('connect-public-mode');
+  document.getElementById('auth-screen').style.display='none';
+  document.getElementById('main-app').classList.remove('visible');
+  if(document.getElementById('client-portal-shell'))return;
+  const shell=document.createElement('div');
+  shell.id='client-portal-shell';
+  shell.style.cssText='position:fixed;inset:0;z-index:19000;background:var(--bg);overflow:auto;color:var(--fg)';
+  shell.innerHTML='<div style="max-width:1080px;margin:auto;padding:28px 20px">'+
+    '<div style="display:flex;justify-content:space-between;margin-bottom:28px"><div><div style="font-family:Georgia,serif;font-size:24px">LEAX <span style="color:var(--brand)">| SJT</span></div><div style="font-size:10px;color:var(--fg3)">PORTAL DEL CLIENTE</div></div>'+
+    '<a href="'+location.pathname+'" style="font-size:11px;color:var(--fg3)">Volver a Connect</a></div>'+
+    '<div id="client-portal-content"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px;max-width:820px;margin:60px auto">'+
+    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px"><h3>Entrar</h3>'+
+    '<input id="cp-email" type="email" placeholder="Correo" style="width:100%;box-sizing:border-box;margin:8px 0;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<input id="cp-pass" type="password" placeholder="Contraseña" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<button class="btn btn-accent" style="width:100%;justify-content:center" onclick="clientPortalLogin()">Entrar</button></div>'+
+    '<div style="background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px"><h3>Activar cuenta</h3>'+
+    '<input id="cp-track" placeholder="Número de seguimiento" style="width:100%;box-sizing:border-box;margin:8px 0;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<input id="cp-act-email" type="email" placeholder="Correo registrado" style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<input id="cp-act-pass" type="password" placeholder="Crear contraseña (mín. 8)" style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">'+
+    '<button class="btn btn-green" style="width:100%;justify-content:center" onclick="clientPortalActivate()">Activar</button></div></div>'+
+    '<div id="cp-error" style="max-width:820px;margin:-42px auto 0;color:var(--red);font-size:11px"></div></div></div>';
+  document.body.appendChild(shell);
+}
+
+async function clientPortalLogin() {
+  const email=document.getElementById('cp-email')?.value.trim().toLowerCase();
+  const password=document.getElementById('cp-pass')?.value||'';
+  const err=document.getElementById('cp-error');if(err)err.textContent='';
+  try{
+    const r=await _supa.auth.signInWithPassword({email,password});
+    if(r.error)throw r.error;
+    await loadClientPortal();
+  }catch(e){if(err)err.textContent='No se pudo iniciar sesión. Verifica tus credenciales.';}
+}
+
+async function clientPortalActivate() {
+  const seguimiento=document.getElementById('cp-track')?.value.trim().toUpperCase();
+  const email=document.getElementById('cp-act-email')?.value.trim().toLowerCase();
+  const password=document.getElementById('cp-act-pass')?.value||'';
+  const err=document.getElementById('cp-error'); if(err)err.textContent='';
+  let otp=document.getElementById('cp-act-otp')?.value.trim()||'';
+  try{
+    if(!otp){
+      const a=await _supa.functions.invoke('leax-client-portal-activate',{body:{action:'request_activation',seguimiento,email}});
+      if(a.error||(a.data&&a.data.error))throw a.error||new Error(a.data.error);
+      const pass=document.getElementById('cp-act-pass');
+      if(pass && !document.getElementById('cp-act-otp')){
+        pass.insertAdjacentHTML('afterend','<input id="cp-act-otp" inputmode="numeric" maxlength="6" placeholder="Código de 6 dígitos enviado a tu correo" style="width:100%;box-sizing:border-box;margin:0 0 10px;padding:10px;background:var(--card);border:1px solid var(--border);border-radius:7px;color:var(--fg)">');
+      }
+      if(err)err.style.color='var(--green)';
+      if(err)err.textContent='Código enviado. Revisa tu correo e introdúcelo para activar.';
+      const btn=document.querySelector('#client-portal-content button.btn-green');
+      if(btn)btn.textContent='Verificar y activar';
+      return;
+    }
+    const a=await _supa.functions.invoke('leax-client-portal-activate',{body:{action:'verify_activation',seguimiento,email,password,otp}});
+    if(a.error||(a.data&&a.data.error))throw a.error||new Error(a.data.error);
+    const l=await _supa.auth.signInWithPassword({email,password});
+    if(l.error)throw l.error;
+    await loadClientPortal();
+  }catch(e){
+    if(err){err.style.color='var(--red)';err.textContent=e?.message||'No se pudo activar la cuenta.';}
+  }
+}
+
+let _clientPortalData=null;
+let _clientPortalCase=null;
+
+async function loadClientPortal() {
+  showClientPortalEntry();
+  const r=await _supa.functions.invoke('leax-client-portal',{body:{action:'dashboard'}});
+  if(r.error||(r.data&&r.data.error)){
+    const e=document.getElementById('cp-error');if(e)e.textContent=(r.data&&r.data.error)||'No se pudo cargar el portal.';
+    return;
+  }
+  _clientPortalData=r.data;
+  if(!_clientPortalCase||!r.data.casos?.some(function(x){return x.id===_clientPortalCase;}))_clientPortalCase=r.data.casos?.[0]?.id||null;
+  renderClientPortal();
+}
+
+function renderClientPortal() {
+  const root=document.getElementById('client-portal-content');
+  const d=_clientPortalData;
+  if(!root||!d)return;
+  const cli=d.cliente||{};
+  const cases=d.casos||[];
+  const cs=cases.find(function(x){return x.id===_clientPortalCase;})||cases[0]||null;
+  let side='';
+  cases.forEach(function(x){
+    side+='<button onclick="_clientPortalCase=\''+x.id+'\';renderClientPortal()" style="width:100%;text-align:left;background:'+(cs&&cs.id===x.id?'var(--brand-glow)':'transparent')+';border:1px solid '+(cs&&cs.id===x.id?'var(--brand-line)':'var(--border)')+';border-radius:8px;padding:10px;margin-bottom:7px;color:var(--fg);cursor:pointer"><b>'+escapeHtml(x.id)+' · '+escapeHtml(x.materia||'Proceso')+'</b><div style="font-size:9.5px;color:var(--fg3);margin-top:3px">'+escapeHtml(x.estado||'activo')+'</div></button>';
+  });
+  let main='<div style="padding:30px;color:var(--fg3)">Todavía no tienes procesos visibles.</div>';
+  if(cs){
+    let stages='';
+    (cs.etapas||[]).forEach(function(e,i){
+      const bg=e.estado==='completada'?'var(--green)':e.estado==='en_curso'?'var(--brand)':'var(--card-hover)';
+      stages+='<div style="display:flex;gap:10px"><div><div style="width:18px;height:18px;border-radius:50%;background:'+bg+';text-align:center;line-height:18px;font-size:9px">'+(e.estado==='completada'?'✓':i+1)+'</div></div><div style="padding-bottom:13px"><b style="font-size:11px">'+escapeHtml(e.nombre)+'</b>'+(e.descripcion_cliente?'<div style="font-size:10px;color:var(--fg3)">'+escapeHtml(e.descripcion_cliente)+'</div>':'')+'</div></div>';
+    });
+    let moves='';
+    (cs.movimientos||[]).forEach(function(m){
+      moves+='<div style="padding:9px 0;border-bottom:1px solid var(--border)"><div style="font-size:9.5px;color:var(--fg3)">'+new Date(m.created_at).toLocaleDateString('es-DO')+'</div><b style="font-size:11px">'+escapeHtml(m.titulo||'Actualización')+'</b>'+(m.descripcion_cliente?'<div style="font-size:10.5px;color:var(--fg2)">'+escapeHtml(m.descripcion_cliente)+'</div>':'')+'</div>';
+    });
+    if(!moves)moves='<div style="font-size:11px;color:var(--fg3)">Sin movimientos visibles.</div>';
+    let docs='';
+    (cs.documentos||[]).forEach(function(doc){
+      docs+='<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)"><span>'+(doc.mime_type==='application/pdf'?'📕':'📄')+'</span><div style="flex:1"><b style="font-size:11px">'+escapeHtml(doc.titulo||doc.nombre_original)+'</b><div style="font-size:9px;color:var(--fg3)">'+escapeHtml(doc.categoria||'Documento')+'</div></div><button class="btn btn-ghost btn-sm" onclick="openClientPortalDocument(\''+doc.id+'\')">Ver</button></div>';
+    });
+    if(!docs)docs='<div style="font-size:11px;color:var(--fg3)">No hay documentos visibles.</div>';
+    let msgHtml='';
+    (d.mensajes||[]).filter(function(m){return !m.caso_id || m.caso_id===cs.id;}).forEach(function(m){
+      msgHtml+='<div class="conv-msg '+(m.autor_tipo==='cliente'?'cliente':'abogado')+'" style="margin-bottom:7px"><div class="conv-who">'+(m.autor_tipo==='cliente'?'Tú':'Equipo legal')+'</div><div>'+escapeHtml(m.mensaje)+'</div><div class="conv-time">'+(m.created_at?new Date(m.created_at).toLocaleString('es-DO',{day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}):'')+'</div></div>';
+    });
+    if(!msgHtml)msgHtml='<div style="font-size:11px;color:var(--fg3)">No hay mensajes todavía.</div>';
+    main='<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:12px"><b style="font-size:15px">'+escapeHtml(cs.id)+' · '+escapeHtml(cs.materia||'Proceso')+'</b><div style="font-size:10px;color:var(--fg3);margin-top:4px">'+escapeHtml(cs.subtipo||'')+' · Estado: '+escapeHtml(cs.estado||'activo')+'</div></div>'+
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"><div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px"><b style="font-size:11px">📦 Seguimiento</b><div style="margin-top:12px">'+(stages||moves)+'</div></div>'+
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px"><b style="font-size:11px">📁 Documentos</b><div style="margin-top:8px">'+docs+'</div></div></div>'+
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:12px"><b style="font-size:11px">🕒 Movimientos recientes</b>'+moves+'</div>'+
+      '<div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px;margin-top:12px"><b style="font-size:11px">💬 Mensajes con tu equipo legal</b><div style="margin:10px 0;max-height:260px;overflow:auto">'+msgHtml+'</div><div style="display:flex;gap:7px"><input id="cp-message" placeholder="Escribe un mensaje..." style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:7px;padding:9px;color:var(--fg)"><button class="btn btn-accent btn-sm" onclick="sendClientPortalMessage(\''+cs.id+'\')">Enviar</button></div></div>';
+  }
+  root.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px"><div><div style="font-size:20px;font-weight:800">Hola, '+escapeHtml(cli.nombre||'Cliente')+'</div><div style="font-size:10px;color:var(--fg3)">Seguimiento: '+escapeHtml(cli.numero_seguimiento||'—')+'</div></div><button class="btn btn-ghost btn-sm" onclick="clientPortalLogout()">Cerrar sesión</button></div>'+
+    '<div style="display:grid;grid-template-columns:minmax(180px,230px) minmax(0,1fr);gap:16px"><aside>'+(side||'<span style="font-size:11px;color:var(--fg3)">Sin procesos.</span>')+'</aside><main>'+main+'</main></div>';
+}
+
+async function sendClientPortalMessage(casoId) {
+  const input=document.getElementById('cp-message');
+  const mensaje=input?.value.trim();
+  if(!mensaje)return;
+  try{
+    const r=await _supa.functions.invoke('leax-client-portal',{body:{action:'message',caso_id:casoId,mensaje:mensaje}});
+    if(r.error||(r.data&&r.data.error))throw r.error||new Error(r.data.error);
+    input.value='';
+    await loadClientPortal();
+  }catch(e){alert(e?.message||'No se pudo enviar el mensaje.');}
+}
+
+async function openClientPortalDocument(id) {
+  const r=await _supa.functions.invoke('leax-client-portal',{body:{action:'document',documento_id:id}});
+  if(r.error||(r.data&&r.data.error)){alert((r.data&&r.data.error)||'No se pudo abrir');return;}
+  abrirVisorDocumento(r.data.signed_url,r.data.documento?.nombre,r.data.documento?.mime_type);
+}
+
+async function clientPortalLogout() {
+  try{await _supa.auth.signOut();}catch{}
+  document.getElementById('client-portal-shell')?.remove();
+  showClientPortalEntry();
+}
+
+
+/* ── Mapa → Modelos → Tareas / Paralegal ── */
+function _workflowInvoke(action, body) {
+  if (!_supa) return Promise.reject(new Error('Servicio no disponible.'));
+  return _supa.functions.invoke('leax-workflow',{body:{action:action,...(body||{})}}).then(function(r){
+    if(r.error || (r.data && r.data.error)) throw r.error || new Error(r.data.error);
+    return r.data;
+  });
+}
+
+async function openModelLibrary() {
+  if(!can('write')){toast('Sin permiso','err');return;}
+  try{
+    const d=await _workflowInvoke('list_models');
+    document.getElementById('modal-model-library')?.remove();
+    const rows=(d.models||[]).map(function(m){
+      return '<div style="background:var(--card);border:1px solid var(--border);border-radius:9px;padding:12px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px"><div><b>'+escapeHtml(m.titulo)+'</b><div style="font-size:9.5px;color:var(--fg3)">'+escapeHtml(m.categoria||'modelo')+(m.mapa_source_key?' · vinculado al Mapa':'')+'</div></div><button class="btn btn-ghost btn-sm" onclick="previewModel(\''+m.id+'\')">Ver</button></div></div>';
+    }).join('')||'<div style="color:var(--fg3);font-size:11px">Todavía no hay modelos maestros. Abre un procedimiento en el Mapa y pulsa “Guardar como modelo”.</div>';
+    window._leaxModelLibrary=d.models||[];
+    const html='<div id="modal-model-library" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(760px,96vw);max-height:88vh;overflow:auto;background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:22px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><div><b>📚 Biblioteca de Modelos</b><div style="font-size:10px;color:var(--fg3);margin-top:3px">Los modelos maestros son de solo origen: las tareas trabajan sobre copias.</div></div><button class="close-btn" onclick="document.getElementById(\'modal-model-library\').remove()">×</button></div>'+rows+'</div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo abrir la biblioteca','err');}
+}
+function previewModel(id) {
+  const m=(window._leaxModelLibrary||[]).find(function(x){return x.id===id;});
+  if(!m)return;
+  document.getElementById('modal-model-preview')?.remove();
+  const html='<div id="modal-model-preview" style="position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:16000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(900px,98vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;overflow:hidden"><div style="padding:12px 16px;display:flex;justify-content:space-between"><b>'+escapeHtml(m.titulo)+'</b><button class="close-btn" onclick="document.getElementById(\'modal-model-preview\').remove()">×</button></div><div style="background:#fff;color:#111;padding:34px 42px;max-height:70vh;overflow:auto">'+(m.contenido_html||'')+'</div></div></div>';
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+async function guardarEditorComoModelo() {
+  if (!can('write')) { toast('Sin permiso','err'); return; }
+  const titulo=(document.getElementById('editor-title')?.textContent||'Modelo legal').trim();
+  const contenido=sanitizeEditorHtml(EA().innerHTML);
+  if(!contenido){toast('El editor está vacío','err');return;}
+  try{
+    const source='mapa:'+titulo.normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,120);
+    await _workflowInvoke('save_model',{titulo:titulo,categoria:'procedimiento',contenido_html:contenido,mapa_source_key:source});
+    toast('Modelo maestro guardado. El original queda intacto.','ok');
+  }catch(e){toast(e?.message||'No se pudo guardar el modelo','err');}
+}
+
+function _flattenProcedures() {
+  const out=[];
+  (getProcs()||[]).forEach(function(p){
+    (p.s||[]).forEach(function(s){
+      out.push({label:(p.e||'📘')+' '+p.n+' — '+s,nombre:s,grupo:p.n,source:_contentSourceKey('mapa',{n:p.n+'-'+s})});
+    });
+  });
+  return out;
+}
+
+async function vincularProcedimientoCaso(casoId) {
+  if(!can('write')){toast('Sin permiso','err');return;}
+  const list=_flattenProcedures();
+  if(!list.length){toast('No hay procedimientos disponibles en el Mapa','err');return;}
+  document.getElementById('modal-link-proc')?.remove();
+  const opts=list.map(function(x,i){return '<option value="'+i+'">'+escapeHtml(x.label)+'</option>';}).join('');
+  const html='<div id="modal-link-proc" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px">'+
+    '<div style="width:min(620px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px">'+
+    '<div style="font-size:15px;font-weight:800;margin-bottom:12px">🧩 Vincular Mapa de Procedimiento</div>'+
+    '<select id="wf-proc-select" style="width:100%;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px">'+opts+'</select>'+
+    '<div style="font-size:10px;color:var(--fg3);margin:12px 0 5px">Etapas para el seguimiento del cliente · una por línea</div>'+
+    '<textarea id="wf-proc-stages" rows="7" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:10px;border-radius:7px" placeholder="Apertura del expediente&#10;Preparación y depósito&#10;Audiencia / trámite&#10;Decisión / cierre"></textarea>'+
+    '<div style="font-size:10px;color:var(--fg3);margin-top:6px">Se crea una copia/instancia para este caso. El Mapa maestro no se modifica.</div>'+
+    '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-link-proc\').remove()">Cancelar</button><button class="btn btn-accent" onclick="confirmarVinculoProcedimiento(\''+casoId+'\')">Vincular</button></div></div></div>';
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+
+async function confirmarVinculoProcedimiento(casoId) {
+  const list=_flattenProcedures();
+  const idx=Number(document.getElementById('wf-proc-select')?.value||0);
+  const proc=list[idx]; if(!proc)return;
+  const etapas=(document.getElementById('wf-proc-stages')?.value||'').split('\n').map(function(x){return x.trim();}).filter(Boolean);
+  try{
+    await _workflowInvoke('link_procedure',{caso_id:casoId,nombre:proc.nombre,mapa_source_key:proc.source,snapshot:{grupo:proc.grupo,subtipo:proc.nombre},etapas:etapas});
+    const cs=getGestionCasos().find(function(x){return x.id===casoId;});if(cs){cs.procedimientoNombre=proc.nombre;cs.procedimientoKey=proc.source;cs.etapaActual=etapas[0]||'';}
+    document.getElementById('modal-link-proc')?.remove();
+    toast('Procedimiento vinculado sin alterar el Mapa maestro','ok');
+  }catch(e){toast(e?.message||'No se pudo vincular','err');}
+}
+
+async function asignarTareaParalegal(casoId) {
+  if(!can('write')){toast('Sin permiso','err');return;}
+  try{
+    const data=await Promise.all([_workflowInvoke('list_models'),_workflowInvoke('list_paralegals')]);
+    const models=data[0].models||[], pars=data[1].paralegals||[];
+    if(!pars.length){toast('No hay paralegales activos en la oficina','err');return;}
+    document.getElementById('modal-task-assign')?.remove();
+    const mopts='<option value="">Sin modelo</option>'+models.map(function(m){return '<option value="'+m.id+'">'+escapeHtml(m.titulo)+'</option>';}).join('');
+    const popts=pars.map(function(p){return '<option value="'+p.user_id+'">'+escapeHtml(p.nombre||'Paralegal')+'</option>';}).join('');
+    const html='<div id="modal-task-assign" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(600px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px">'+
+      '<div style="font-size:15px;font-weight:800;margin-bottom:12px">📌 Asignar trabajo al paralegal</div>'+
+      '<input id="wf-task-title" placeholder="Ej: Preparar borrador de recurso" style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px;margin-bottom:8px">'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><select id="wf-task-model" style="background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px">'+mopts+'</select><select id="wf-task-paralegal" style="background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px">'+popts+'</select></div>'+
+      '<textarea id="wf-task-instructions" rows="5" placeholder="Instrucciones del abogado..." style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px;margin-top:8px"></textarea>'+
+      '<div style="font-size:10px;color:var(--fg3);margin-top:6px">Si eliges un modelo, el paralegal trabaja sobre una copia de contenido. Nunca modifica el modelo maestro.</div>'+
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-task-assign\').remove()">Cancelar</button><button class="btn btn-accent" onclick="confirmarAsignacionTarea(\''+casoId+'\')">Asignar</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo preparar la asignación','err');}
+}
+
+async function confirmarAsignacionTarea(casoId) {
+  const titulo=document.getElementById('wf-task-title')?.value.trim();
+  const modelo_id=document.getElementById('wf-task-model')?.value||null;
+  const asignado_a=document.getElementById('wf-task-paralegal')?.value||'';
+  const instrucciones=document.getElementById('wf-task-instructions')?.value.trim()||'';
+  if(!titulo){toast('Escribe el título de la tarea','err');return;}
+  try{
+    await _workflowInvoke('assign_task',{caso_id:casoId,titulo:titulo,modelo_id:modelo_id,asignado_a:asignado_a,instrucciones:instrucciones});
+    document.getElementById('modal-task-assign')?.remove();toast('Tarea asignada al paralegal','ok');
+  }catch(e){toast(e?.message||'No se pudo asignar','err');}
+}
+
+async function verFlujoCaso(casoId) {
+  try{
+    const d=await _workflowInvoke('case_workflow',{caso_id:casoId});
+    document.getElementById('modal-case-flow')?.remove();
+    const stages=(d.stages||[]).map(function(s){return '<div style="padding:7px 0;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:6px"><div style="flex:1"><b>'+escapeHtml(s.nombre)+'</b> <span style="font-size:9px;color:var(--fg3)">· '+escapeHtml(s.estado)+'</span></div><button class="btn btn-ghost btn-sm" onclick="actualizarEtapaCaso(\''+casoId+'\',\''+s.id+'\',\'en_curso\')">En curso</button><button class="btn btn-ghost btn-sm" onclick="actualizarEtapaCaso(\''+casoId+'\',\''+s.id+'\',\'completada\')">✓</button></div>';}).join('')||'<span style="color:var(--fg3)">Sin etapas vinculadas.</span>';
+    const tasks=(d.tasks||[]).map(function(t){return '<div style="padding:7px 0;border-bottom:1px solid var(--border)"><div style="display:flex;align-items:center;gap:6px"><div style="flex:1"><b>'+escapeHtml(t.titulo)+'</b><div style="font-size:9px;color:var(--fg3)">'+escapeHtml(t.estado)+'</div></div>'+(t.estado==='en_revision'?'<button class="btn btn-ghost btn-sm" onclick="revisarTareaAbogado(\''+casoId+'\',\''+t.id+'\')">Revisar</button>':'')+'</div></div>';}).join('')||'<span style="color:var(--fg3)">Sin tareas.</span>';
+    const html='<div id="modal-case-flow" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(650px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px"><div style="font-size:15px;font-weight:800;margin-bottom:14px">🔄 Flujo del expediente '+escapeHtml(casoId)+'</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:14px"><div><b style="font-size:11px">Etapas</b><div style="margin-top:8px">'+stages+'</div></div><div><b style="font-size:11px">Tareas</b><div style="margin-top:8px">'+tasks+'</div></div></div><div style="text-align:right;margin-top:16px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-case-flow\').remove()">Cerrar</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo cargar el flujo','err');}
+}
+
+async function abrirMensajesPortalCaso(casoId) {
+  try{
+    const d=await _workflowInvoke('case_messages',{caso_id:casoId});
+    document.getElementById('modal-case-messages')?.remove();
+    let rows='';
+    (d.messages||[]).forEach(function(m){
+      rows+='<div class="conv-msg '+(m.autor_tipo==='cliente'?'cliente':'abogado')+'" style="margin-bottom:8px"><div class="conv-who">'+(m.autor_tipo==='cliente'?'Cliente':'Equipo legal')+'</div><div>'+escapeHtml(m.mensaje)+'</div><div class="conv-time">'+(m.created_at?new Date(m.created_at).toLocaleString('es-DO'):'')+'</div></div>';
+    });
+    if(!rows)rows='<div class="conv-empty">No hay mensajes del Portal del Cliente.</div>';
+    const html='<div id="modal-case-messages" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:16000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(650px,96vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:20px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><b>💬 Portal · '+escapeHtml(casoId)+'</b><button class="close-btn" onclick="document.getElementById(\'modal-case-messages\').remove()">×</button></div><div style="max-height:360px;overflow:auto;margin-bottom:10px">'+rows+'</div><div style="display:flex;gap:7px"><input id="office-portal-message" placeholder="Responder al cliente..." style="flex:1;background:var(--card);border:1px solid var(--border);border-radius:7px;padding:9px;color:var(--fg)"><button class="btn btn-accent" onclick="enviarMensajePortalCaso(\''+casoId+'\')">Enviar</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudieron cargar los mensajes','err');}
+}
+async function enviarMensajePortalCaso(casoId) {
+  const input=document.getElementById('office-portal-message'),mensaje=input?.value.trim();
+  if(!mensaje)return;
+  try{
+    await _workflowInvoke('send_case_message',{caso_id:casoId,mensaje:mensaje});
+    document.getElementById('modal-case-messages')?.remove();
+    abrirMensajesPortalCaso(casoId);
+  }catch(e){toast(e?.message||'No se pudo enviar','err');}
+}
+
+async function actualizarEtapaCaso(casoId,stageId,estado) {
+  try{
+    await _workflowInvoke('update_stage',{stage_id:stageId,estado:estado});
+    toast('Etapa actualizada','ok');
+    document.getElementById('modal-case-flow')?.remove();
+    verFlujoCaso(casoId);
+  }catch(e){toast(e?.message||'No se pudo actualizar la etapa','err');}
+}
+
+async function revisarTareaAbogado(casoId,taskId) {
+  try{
+    const d=await _workflowInvoke('task_detail',{task_id:taskId});
+    document.getElementById('modal-task-review')?.remove();
+    const content=d.task.borrador_html||'<p>El paralegal todavía no ha guardado un borrador.</p>';
+    const html='<div id="modal-task-review" style="position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:17000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(900px,98vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;overflow:hidden"><div style="padding:13px 16px;border-bottom:1px solid var(--border)"><b>Revisión · '+escapeHtml(d.task.titulo)+'</b></div><div style="max-height:55vh;overflow:auto;background:#fff;color:#111;padding:32px 40px">'+content+'</div><div style="padding:12px 16px"><textarea id="task-review-comment" rows="3" placeholder="Comentario de revisión..." style="width:100%;box-sizing:border-box;background:var(--card);border:1px solid var(--border);color:var(--fg);padding:9px;border-radius:7px"></textarea><div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-task-review\').remove()">Cerrar</button><button class="btn btn-ghost" onclick="confirmarRevisionTarea(\''+casoId+'\',\''+taskId+'\',\'correcciones\')">Solicitar correcciones</button><button class="btn btn-green" onclick="confirmarRevisionTarea(\''+casoId+'\',\''+taskId+'\',\'aprobada\')">✓ Aprobar</button></div></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo abrir la revisión','err');}
+}
+async function confirmarRevisionTarea(casoId,taskId,estado) {
+  const comentario=document.getElementById('task-review-comment')?.value.trim()||'';
+  try{
+    await _workflowInvoke('review_task',{task_id:taskId,estado:estado,comentario:comentario});
+    document.getElementById('modal-task-review')?.remove();
+    document.getElementById('modal-case-flow')?.remove();
+    toast(estado==='aprobada'?'Tarea aprobada':'Correcciones enviadas al paralegal','ok');
+    verFlujoCaso(casoId);
+  }catch(e){toast(e?.message||'No se pudo revisar la tarea','err');}
+}
+
+function ensureWorkflowUI() {
+  const nav=document.getElementById('main-nav');
+  if(!nav)return;
+  let btn=document.getElementById('nav-my-tasks');
+  if(getRol()==='paralegal'){
+    if(!btn){btn=document.createElement('div');btn.id='nav-my-tasks';btn.className='nav-tab';btn.textContent='📌 Mis tareas';btn.onclick=showParalegalTasks;nav.appendChild(btn);}
+    btn.style.display='';
+  } else if(btn) btn.style.display='none';
+}
+
+async function showParalegalTasks() {
+  try{
+    const d=await _workflowInvoke('my_tasks');
+    document.getElementById('modal-my-tasks')?.remove();
+    const models=new Map((d.models||[]).map(function(m){return[m.id,m];}));
+    const rows=(d.tasks||[]).map(function(t){
+      const m=models.get(t.modelo_id);
+      return '<div style="background:var(--card);border:1px solid var(--border);border-radius:9px;padding:13px;margin-bottom:8px"><div style="display:flex;justify-content:space-between;gap:10px"><div><b>'+escapeHtml(t.titulo)+'</b><div style="font-size:10px;color:var(--fg3)">Caso '+escapeHtml(t.caso_id)+' · '+escapeHtml(t.estado)+'</div></div><div style="display:flex;gap:5px;flex-wrap:wrap">'+(m?'<button class="btn btn-ghost btn-sm" onclick="abrirTareaBorrador(\''+t.id+'\')">✍ Trabajar copia</button>':'')+'<button class="btn btn-ghost btn-sm" onclick="cambiarEstadoTareaParalegal(\''+t.id+'\',\'en_revision\')">Enviar a revisión</button></div></div>'+(t.instrucciones?'<div style="font-size:11px;color:var(--fg2);margin-top:8px">'+escapeHtml(t.instrucciones)+'</div>':'')+'</div>';
+    }).join('')||'<div style="color:var(--fg3)">No tienes tareas asignadas.</div>';
+    const html='<div id="modal-my-tasks" style="position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:15000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(780px,96vw);max-height:90vh;overflow:auto;background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;padding:24px"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px"><b>📌 Mis tareas</b><button class="close-btn" onclick="document.getElementById(\'modal-my-tasks\').remove()">×</button></div>'+rows+'</div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudieron cargar tus tareas','err');}
+}
+
+async function abrirTareaBorrador(taskId) {
+  try{
+    const d=await _workflowInvoke('task_detail',{task_id:taskId});
+    const content=d.task.borrador_html || d.model?.contenido_html || '<p></p>';
+    document.getElementById('modal-task-draft')?.remove();
+    const html='<div id="modal-task-draft" style="position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:16000;display:flex;align-items:center;justify-content:center;padding:20px"><div style="width:min(900px,98vw);background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;overflow:hidden"><div style="padding:13px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between"><b>'+escapeHtml(d.task.titulo)+'</b><span style="font-size:10px;color:var(--fg3)">Copia de trabajo · v'+(d.task.version_borrador||0)+'</span></div><div id="task-draft-editor" contenteditable="true" style="min-height:420px;max-height:65vh;overflow:auto;background:#fff;color:#111;padding:36px 42px;line-height:1.6">'+content+'</div><div style="padding:12px 16px;display:flex;justify-content:flex-end;gap:8px"><button class="btn btn-ghost" onclick="document.getElementById(\'modal-task-draft\').remove()">Cerrar</button><button class="btn btn-accent" onclick="guardarBorradorTarea(\''+taskId+'\')">💾 Guardar versión</button></div></div></div>';
+    document.body.insertAdjacentHTML('beforeend',html);
+  }catch(e){toast(e?.message||'No se pudo abrir la tarea','err');}
+}
+
+async function guardarBorradorTarea(taskId) {
+  const html=document.getElementById('task-draft-editor')?.innerHTML||'';
+  try{const d=await _workflowInvoke('save_task_draft',{task_id:taskId,contenido_html:html});toast('Borrador guardado · versión '+d.version,'ok');}catch(e){toast(e?.message||'No se pudo guardar','err');}
+}
+async function cambiarEstadoTareaParalegal(taskId,estado) {
+  try{await _workflowInvoke('update_task',{task_id:taskId,estado:estado});toast('Tarea enviada a revisión','ok');document.getElementById('modal-my-tasks')?.remove();showParalegalTasks();}catch(e){toast(e?.message||'No se pudo actualizar','err');}
 }
 
 /* ══════════════════════════════════════════
