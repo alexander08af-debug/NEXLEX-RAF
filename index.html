@@ -3372,6 +3372,8 @@ body.connect-public-mode #page-connect { display:flex !important; }
         <div class="form-group"><label>Estado</label><select id="aud-estado"><option>Pendiente</option><option>Celebrada</option><option>Aplazada</option><option>Concluida</option></select></div>
       </div>
       <div class="form-group"><label>Tipo</label><input id="aud-tipo" placeholder="Ej: Audiencia preliminar"></div>
+      <div class="form-group"><label>Expediente vinculado</label><select id="aud-caso"><option value="">— Sin vincular —</option></select></div>
+      <div class="form-group" style="display:flex;align-items:center;gap:8px"><input id="aud-visible-cliente" type="checkbox" style="width:auto;accent-color:var(--brand)"><label for="aud-visible-cliente" style="margin:0">Visible en Portal del Cliente</label></div>
       <div class="form-group"><label>Nota</label><textarea id="aud-nota" rows="3" placeholder="Notas..."></textarea></div>
     </div>
     <div class="modal-footer">
@@ -4271,6 +4273,8 @@ function _audRowToLocal(row) {
     estado: row.estado || 'Pendiente',
     nota: row.nota || '',
     usuarioId: row.usuario_id || null,
+    casoId: row.metadata?.caso_id || '',
+    visibleCliente: row.metadata?.visible_cliente === true,
   };
 }
 
@@ -4287,7 +4291,7 @@ async function _supaInsertAudiencia(fecha, a) {
       estado: a.estado || 'Pendiente',
       nota: a.nota || '',
       usuario_id: SESSION.id || null,
-      metadata: {},
+      metadata: { caso_id:a.casoId||null, visible_cliente:a.visibleCliente===true },
       updated_at: new Date().toISOString(),
     }).select('id').single();
     if (error) throw error;
@@ -4318,7 +4322,7 @@ async function _syncAudienciasSupabase() {
   if (!DB_AUDIENCIAS[eid]) DB_AUDIENCIAS[eid] = {};
   try {
     let { data, error } = await _supa.from('audiencias')
-      .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,created_at,updated_at')
+      .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,metadata,created_at,updated_at')
       .eq('empresa_id', empresaUuid)
       .order('fecha', { ascending:true })
       .order('hora', { ascending:true });
@@ -4334,7 +4338,7 @@ async function _syncAudienciasSupabase() {
         }
       }
       const reload = await _supa.from('audiencias')
-        .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,created_at,updated_at')
+        .select('id,empresa_id,fecha,cliente,hora,tipo,estado,nota,usuario_id,metadata,created_at,updated_at')
         .eq('empresa_id', empresaUuid)
         .order('fecha', { ascending:true })
         .order('hora', { ascending:true });
@@ -5390,6 +5394,11 @@ function abrirAddAud(fecha) {
   document.getElementById('aud-title').textContent = `Nueva Audiencia — ${fecha}`;
   ['aud-cliente','aud-hora','aud-tipo','aud-nota'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('aud-estado').value = 'Pendiente';
+  const caseSel=document.getElementById('aud-caso');
+  if(caseSel){
+    caseSel.innerHTML='<option value="">— Sin vincular —</option>'+getGestionCasos().filter(function(x){return x.estado!=='cerrado';}).map(function(x){return '<option value="'+x.id+'">'+escapeHtml(x.id+' · '+(x.materia||'Caso'))+'</option>';}).join('');
+  }
+  const vis=document.getElementById('aud-visible-cliente'); if(vis)vis.checked=false;
   closeModal('modal-ver-aud'); openModal('modal-add-aud');
   document.getElementById('ctx-menu').style.display = 'none';
 }
@@ -5402,8 +5411,10 @@ function saveAud() {
   const tipo   = document.getElementById('aud-tipo').value.trim() || 'General';
   const estado = document.getElementById('aud-estado').value;
   const nota   = document.getElementById('aud-nota').value.trim();
+  const casoId = document.getElementById('aud-caso')?.value || '';
+  const visibleCliente = document.getElementById('aud-visible-cliente')?.checked === true;
   if (!auds[audDate]) auds[audDate] = [];
-  const nuevaAudiencia = { cliente:cli, hora, tipo, estado, nota, usuarioId:SESSION.id };
+  const nuevaAudiencia = { cliente:cli, hora, tipo, estado, nota, usuarioId:SESSION.id, casoId, visibleCliente };
   auds[audDate].push(nuevaAudiencia);
   _supaInsertAudiencia(audDate, nuevaAudiencia).then(id => { if (id) nuevaAudiencia._dbId = id; });
   // Guardar cliente en historial de autocompletado
@@ -7802,7 +7813,12 @@ function _rowToGestionCaso(row) {
     numeroPJ: row.numero_pj || '',
     observaciones: row.observaciones || '',
     abogado: row.abogado || '',
+    abogadoUserId: row.abogado_user_id || null,
     origenConnectId: row.origen_connect_id || null,
+    procedimientoKey: row.procedimiento_key || null,
+    procedimientoNombre: row.procedimiento_nombre || '',
+    portalVisible: row.portal_visible !== false,
+    etapaActual: row.etapa_actual || '',
     fechaApertura: row.fecha_apertura || '',
     estado: row.estado || 'activo',
     origen: row.origen || 'manual',
@@ -7847,7 +7863,12 @@ async function _supaUpsertCaso(cs) {
       subtipo: cs.subtipo||'', tribunal: cs.tribunal||'', contraparte: cs.contraparte||'',
       numero_pj: cs.numeroPJ||'', observaciones: cs.observaciones||'',
       estado: cs.estado||'activo', abogado: cs.abogado||'',
+      abogado_user_id: cs.abogadoUserId||null,
       origen: cs.origen||'manual', origen_connect_id: cs.origenConnectId||null,
+      procedimiento_key: cs.procedimientoKey||null,
+      procedimiento_nombre: cs.procedimientoNombre||null,
+      portal_visible: cs.portalVisible!==false,
+      etapa_actual: cs.etapaActual||null,
       actuaciones: cs.actuaciones||[],
       fecha_apertura: cs.fechaApertura||'',
       fecha_creacion: cs.fechaCreacion||new Date().toISOString(),
@@ -7867,7 +7888,7 @@ async function _syncGestionSupabase() {
         .select('id,nombre,tipo,telefono,whatsapp,email,documento,notas,token_portal,origen_connect_id,numero_seguimiento,portal_activo,portal_habilitado_at,origen,direccion,abogado_responsable_user_id,empresa_id,creado_por,favorito,archivado,fecha_creacion')
         .order('fecha_creacion', { ascending:false }),
       _supa.from('casos')
-        .select('id,cliente_id,empresa_id,materia,subtipo,tribunal,contraparte,numero_pj,observaciones,abogado,origen_connect_id,fecha_apertura,estado,origen,actuaciones,fecha_creacion,ultima_actualizacion')
+        .select('id,cliente_id,empresa_id,materia,subtipo,tribunal,contraparte,numero_pj,observaciones,abogado,abogado_user_id,origen_connect_id,procedimiento_key,procedimiento_nombre,portal_visible,etapa_actual,fecha_apertura,estado,origen,actuaciones,fecha_creacion,ultima_actualizacion')
         .order('fecha_creacion', { ascending:false }),
     ]);
 
@@ -8367,6 +8388,10 @@ function openGestionNuevoCliente() {
           </div>
           <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Correo</div><input id="gc-email" type="email" placeholder="cliente@email.com" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;font-family:inherit;outline:none;box-sizing:border-box"></div>
           <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Cédula / Pasaporte</div><input id="gc-doc" type="text" placeholder="001-XXXXXXX-X" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;font-family:inherit;outline:none;box-sizing:border-box"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Origen</div><select id="gc-origen" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:12px"><option value="manual">Directo / oficina</option><option value="referido">Referido</option><option value="whatsapp">WhatsApp</option><option value="telefono">Teléfono</option><option value="otro">Otro</option></select></div>
+            <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Dirección</div><input id="gc-direccion" type="text" placeholder="Opcional" style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;box-sizing:border-box"></div>
+          </div>
           <div><div style="font-size:11px;color:var(--fg3);margin-bottom:5px">Notas internas</div><textarea id="gc-notas" rows="2" placeholder="Observaciones privadas sobre el cliente..." style="width:100%;background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:9px 12px;color:var(--fg);font-size:13px;font-family:inherit;outline:none;resize:vertical;box-sizing:border-box"></textarea></div>
         </div>
         <div style="display:flex;gap:10px;margin-top:22px;justify-content:flex-end">
@@ -8395,6 +8420,11 @@ function saveGestionNuevoCliente() {
     favorito:      false,
     archivado:     false,
     tokenPortal:   null,
+    numeroSeguimiento:null,
+    portalActivo:false,
+    origen:         document.getElementById('gc-origen')?.value || 'manual',
+    direccion:      document.getElementById('gc-direccion')?.value.trim() || '',
+    abogadoResponsableUserId: SESSION?.authUserId || SESSION?.id || null,
     empresaId:      getEmpresaUuid(),
     creadoPor:     SESSION?.email     || '',
     fechaCreacion: new Date().toISOString(),
@@ -8524,8 +8554,13 @@ function saveNuevoCaso(clienteId) {
     observaciones: document.getElementById('nc-obs')?.value.trim()         || '',
     estado:        'activo',
     abogado:       SESSION?.nombre || '',
+    abogadoUserId: SESSION?.authUserId || SESSION?.id || null,
     origen:        'manual',
     origenConnectId: null,
+    portalVisible: true,
+    procedimientoKey: null,
+    procedimientoNombre: '',
+    etapaActual: '',
     actuaciones:   [],
     fechaApertura: new Date().toLocaleDateString('es-DO', { day:'2-digit', month:'2-digit', year:'numeric' }),
     fechaCreacion: new Date().toISOString(),
@@ -8588,8 +8623,13 @@ async function convertirConsultaEnCaso(consultaId) {
     observaciones: consulta.descripcion || '',
     estado:        'activo',
     abogado:       consulta.abogadoAsignado || SESSION?.nombre || '',
+    abogadoUserId: SESSION?.authUserId || SESSION?.id || null,
     origen:        'connect',
     origenConnectId: consultaId,
+    portalVisible: true,
+    procedimientoKey: null,
+    procedimientoNombre: '',
+    etapaActual: '',
     actuaciones:   [{
       tipo:        'otro',
       descripcion: `Caso originado desde LEAX | SJT Connect. Ref. ${consultaId}. Provincia: ${consulta.provincia||'—'}.`,
