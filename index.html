@@ -4896,6 +4896,7 @@ async function testBrevoConnection() {
 
 async function sendNotificationTest() {
   if (!_supa || !SESSION) return;
+  if (_brevoIntegration?.configured) return testBrevoConnection();
   const email_destino=(document.getElementById('cfg-notif-email')?.value||'').trim().toLowerCase();
   if(!email_destino || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email_destino)){toast('Escribe un correo válido para la prueba','err');return;}
   const status=document.getElementById('cfg-notif-status');
@@ -4947,8 +4948,7 @@ function updateConfigPage() {
   document.getElementById('cfg-email').textContent   = u.email;
   document.getElementById('cfg-rol').innerHTML       = `<span class="user-role-badge role-${u.rol}">${u.rol}</span>`;
   document.getElementById('cfg-empresa').textContent = u.empresaNombre || e?.nombre || '';
-  loadNotificationSettings();
-  loadBrevoSettings();
+  loadNotificationSettings().then(()=>loadBrevoSettings());
 }
 
 /* ══════════════════════════════════════════
