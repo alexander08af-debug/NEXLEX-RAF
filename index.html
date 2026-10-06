@@ -7049,6 +7049,13 @@ async function loadPublicTracking() {
           <div>${actHtml}</div>
         </div>`);
     }
+    if(data.portal?.available){
+      statusBox.insertAdjacentHTML('beforeend',
+        '<div class="track-result-card" style="margin-top:10px;border-color:rgba(52,211,153,.35);background:rgba(52,211,153,.05)">'+
+        '<div style="font-size:12px;font-weight:800;color:var(--green);margin-bottom:4px">🔐 Tu Portal del Cliente está disponible</div>'+
+        '<div style="font-size:10.5px;color:var(--fg2);line-height:1.5;margin-bottom:9px">Tu consulta ya forma parte de un servicio contratado. En el portal podrás ver todos tus procesos, movimientos y documentos que el abogado publique.</div>'+
+        '<a class="btn btn-green btn-sm" href="?portal=1">Entrar al Portal del Cliente</a></div>');
+    }
 
     const msgs=Array.isArray(data.mensajes)?data.mensajes:[];
     const thread=document.getElementById('pt-thread');
