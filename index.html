@@ -8240,6 +8240,19 @@ function openClienteWorkspace(id) {
           ${c.notas?`<div style="grid-column:1/-1"><div style="font-size:9px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px">Notas internas</div><div style="font-size:12px;color:var(--fg2);line-height:1.6">${escapeHtml(c.notas)}</div></div>`:''}
         </div>
 
+        <!-- Portal del cliente autenticado -->
+        <div style="padding:14px 28px;border-bottom:1px solid var(--border);background:rgba(52,211,153,.035);flex-shrink:0">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div>
+              <div style="font-size:11px;font-weight:800;color:var(--fg2);margin-bottom:3px">🔐 Portal del Cliente · Cuenta autenticada</div>
+              ${c.portalActivo ? `<div style="font-size:10.5px;color:var(--fg3)">Activo · Seguimiento: <strong style="color:var(--green)">${escapeHtml(c.numeroSeguimiento||c.origenConnectId||'—')}</strong></div>` : `<div style="font-size:10.5px;color:var(--fg3)">Aún no habilitado. El cliente podrá crear su cuenta con su correo y número de seguimiento.</div>`}
+            </div>
+            <div style="display:flex;gap:6px;align-items:center">
+              ${c.portalActivo ? `<button class="btn btn-ghost btn-sm" onclick="navigator.clipboard&&navigator.clipboard.writeText(location.origin+location.pathname+'?portal=1').then(()=>toast('Acceso al portal copiado','ok'))">📋 Copiar acceso</button>` : `<button class="btn btn-green btn-sm" onclick="habilitarPortalCliente('${c.id}')">🔐 Habilitar Portal</button>`}
+            </div>
+          </div>
+        </div>
+
         <!-- Portal del cliente -->
         <div style="padding:12px 28px;border-bottom:1px solid var(--border);background:rgba(79,124,255,.03);flex-shrink:0">
           <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
@@ -8688,6 +8701,20 @@ function openCasoWorkspace(id) {
           <span style="font-size:11px;color:var(--fg3);margin-left:auto">Apertura: ${escapeHtml(cs.fechaApertura||'—')}</span>
         </div>
 
+        <!-- Expediente Digital -->
+        <div style="padding:14px 28px;border-bottom:1px solid var(--border);background:rgba(79,124,255,.025)">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+            <div><div style="font-size:11px;font-weight:800;color:var(--fg2)">📁 Expediente Digital</div><div style="font-size:10px;color:var(--fg3)">Archivos privados. Publica solo lo que el cliente deba ver.</div></div>
+            <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+              <select id="doc-cat-${cs.id}" style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:6px;color:var(--fg);font-size:10px"><option value="contrato">Contrato</option><option value="demanda">Demanda/Querella</option><option value="recurso">Recurso</option><option value="sentencia">Sentencia</option><option value="acto">Acto</option><option value="prueba">Prueba</option><option value="identificacion">Identificación</option><option value="otro" selected>Otro</option></select>
+              <label style="font-size:10px;color:var(--fg2);display:flex;gap:5px;align-items:center"><input id="doc-visible-${cs.id}" type="checkbox" style="accent-color:var(--brand)"> Visible cliente</label>
+              <input id="doc-file-${cs.id}" type="file" style="max-width:190px;font-size:10px;color:var(--fg3)">
+              <button class="btn btn-accent btn-sm" onclick="subirDocumentoCaso('${cs.id}')">Subir</button>
+            </div>
+          </div>
+          <div id="case-docs-${cs.id}" style="font-size:11px;color:var(--fg3)">Cargando documentos…</div>
+        </div>
+
         <!-- Cronología -->
         <div style="padding:16px 28px 12px;flex:1;overflow-y:auto;min-height:200px">
           <div style="font-size:11px;font-weight:700;color:var(--fg3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px">📋 Cronología (${acts.length} actuaciones)</div>
@@ -8703,6 +8730,7 @@ function openCasoWorkspace(id) {
       </div>
     </div>`;
   document.body.insertAdjacentHTML('beforeend', html);
+  loadCaseDocuments(cs.id);
 }
 
 /* ── Tipos de actuación ── */
