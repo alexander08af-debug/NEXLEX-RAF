@@ -6332,7 +6332,7 @@ const _supa = (typeof supabase !== 'undefined') ? supabase.createClient(_SUPA_UR
   realtime: { params: { eventsPerSecond: 2 } },
 }) : null;
 
-initSupabaseAuth();
+setTimeout(()=>initSupabaseAuth(),0);
 
 /* Convierte objeto consulta LEAX | SJT → fila Supabase */
 function _consultaToRow(c) {
@@ -7758,6 +7758,12 @@ function _rowToGestionCliente(row) {
     notas: row.notas || '',
     tokenPortal: row.token_portal || null,
     origenConnectId: row.origen_connect_id || null,
+    numeroSeguimiento: row.numero_seguimiento || row.origen_connect_id || null,
+    portalActivo: row.portal_activo === true,
+    portalHabilitadoAt: row.portal_habilitado_at || null,
+    origen: row.origen || (row.origen_connect_id ? 'connect' : 'manual'),
+    direccion: row.direccion || '',
+    abogadoResponsableUserId: row.abogado_responsable_user_id || null,
     empresaId: row.empresa_id || getEmpresaUuid(),
     creadoPor: row.creado_por || '',
     favorito: row.favorito === true,
@@ -7800,6 +7806,12 @@ async function _supaUpsertCliente(c) {
       favorito: c.favorito===true, archivado: c.archivado===true,
       origen_connect_id: c.origenConnectId||null,
       token_portal: c.tokenPortal||null,
+      numero_seguimiento: c.numeroSeguimiento||c.origenConnectId||null,
+      portal_activo: c.portalActivo===true,
+      portal_habilitado_at: c.portalHabilitadoAt||null,
+      origen: c.origen||(c.origenConnectId?'connect':'manual'),
+      direccion: c.direccion||'',
+      abogado_responsable_user_id: c.abogadoResponsableUserId||null,
       fecha_creacion: c.fechaCreacion||new Date().toISOString(),
     };
     const { error } = await _supa.from('clientes').upsert(row);
@@ -7833,7 +7845,7 @@ async function _syncGestionSupabase() {
   try {
     const [clRes, csRes] = await Promise.all([
       _supa.from('clientes')
-        .select('id,nombre,tipo,telefono,whatsapp,email,documento,notas,token_portal,origen_connect_id,empresa_id,creado_por,favorito,archivado,fecha_creacion')
+        .select('id,nombre,tipo,telefono,whatsapp,email,documento,notas,token_portal,origen_connect_id,numero_seguimiento,portal_activo,portal_habilitado_at,origen,direccion,abogado_responsable_user_id,empresa_id,creado_por,favorito,archivado,fecha_creacion')
         .order('fecha_creacion', { ascending:false }),
       _supa.from('casos')
         .select('id,cliente_id,empresa_id,materia,subtipo,tribunal,contraparte,numero_pj,observaciones,abogado,origen_connect_id,fecha_apertura,estado,origen,actuaciones,fecha_creacion,ultima_actualizacion')
@@ -8499,7 +8511,7 @@ function saveNuevoCaso(clienteId) {
 }
 
 /* ── Convertir consulta Connect → Cliente + Caso ── */
-function convertirConsultaEnCaso(consultaId) {
+async function convertirConsultaEnCaso(consultaId) {
   if (!can('write')) { toast('Sin permiso', 'err'); return; }
   const inbox = getInboxConsultas();
   const consulta = inbox.find(x => x.id === consultaId);
@@ -8521,6 +8533,10 @@ function convertirConsultaEnCaso(consultaId) {
     archivado:      false,
     tokenPortal:    null,
     origenConnectId:consultaId,
+    numeroSeguimiento:consultaId,
+    portalActivo:false,
+    origen:'connect',
+    abogadoResponsableUserId:SESSION?.authUserId||SESSION?.id||null,
     empresaId:      getEmpresaUuid(),
     creadoPor:      SESSION?.email     || '',
     fechaCreacion:  new Date().toISOString(),
@@ -8556,7 +8572,14 @@ function convertirConsultaEnCaso(consultaId) {
   const casos = getGestionCasos();
   casos.unshift(nuevoCaso);
   saveGestionCasos(casos);
-  _supaUpsertCaso(nuevoCaso);
+  await _supaUpsertCaso(nuevoCaso);
+  await _supaUpsertCliente(nuevoCliente);
+  try {
+    if (_supa) {
+      await _supa.from('consultas').update({convertida_en_caso:true,cliente_id:nuevoCliente.id,caso_id:nuevoCaso.id,fecha_conversion:new Date().toISOString(),convertido_por:SESSION?.authUserId||SESSION?.id||null,fecha_actualizacion:new Date().toISOString()}).eq('id',consultaId);
+      await _supa.from('documentos').update({cliente_id:nuevoCliente.id,caso_id:nuevoCaso.id}).eq('consulta_id',consultaId);
+    }
+  } catch(e) { console.warn('[LEAX] Persistencia de conversión:',e); }
 
   // Marcar consulta como convertida
   const inboxList = getInboxConsultas();
