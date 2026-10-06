@@ -3897,6 +3897,17 @@ body.connect-public-mode #page-connect { display:flex !important; }
   registerAction({ id:'generar-token-portal', nombre:'Generar token portal cliente', modulo:'gestion', roles:['admin','abogado','superadmin'], activo:true });
   registerAction({ id:'configurar-notificaciones-email', nombre:'Configurar avisos por correo', modulo:'connect', roles:['admin','abogado','paralegal','superadmin'], activo:true });
   registerAction({ id:'responder-consulta-multicanal', nombre:'Responder consulta por LEAX/correo', modulo:'connect', roles:['admin','abogado','superadmin'], activo:true });
+  /* Fase 2.1 — Portal Cliente + Expediente Digital (aditiva) */
+  registerModule({ id:'portal_cliente', nombre:'Portal del Cliente', version:'1.0.0', descripcion:'Acceso autenticado del cliente a sus procesos, seguimiento, documentos visibles y mensajes.', roles:['cliente_portal'], activo:true, estado:'activo', dependencias:['core','gestion'], meta:{ supabase:true, identidadSeparada:true } });
+  registerModule({ id:'expediente_digital', nombre:'Expediente Digital', version:'1.0.0', descripcion:'Documentos privados por cliente/caso, visibilidad controlada y consulta segura.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['gestion'], meta:{ bucket:'leax-documentos', privado:true } });
+  registerModule({ id:'biblioteca_modelos', nombre:'Biblioteca de Modelos', version:'1.0.0', descripcion:'Modelos maestros reutilizables vinculables al Mapa y a tareas sin alterar el original.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['mapa','expediente_digital'] });
+  registerModule({ id:'flujo_paralegal', nombre:'Flujo Abogado–Paralegal', version:'1.0.0', descripcion:'Asignación de modelos, borradores, revisión, correcciones y aprobación.', roles:['admin','abogado','paralegal','superadmin'], activo:true, estado:'activo', dependencias:['gestion','biblioteca_modelos'] });
+  registerModule({ id:'seguimiento_procesal', nombre:'Seguimiento Procesal', version:'1.0.0', descripcion:'Etapas y movimientos del expediente con visibilidad separada para cliente.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['gestion','portal_cliente','mapa'] });
+  registerRoute({ id:'portal-cliente', path:'portal', modulo:'portal_cliente', roles:['cliente_portal'] });
+  registerAction({ id:'habilitar-portal-cliente', nombre:'Habilitar cuenta Portal del Cliente', modulo:'portal_cliente', roles:['admin','abogado','superadmin'], activo:true });
+  registerAction({ id:'publicar-movimiento-cliente', nombre:'Publicar movimiento al cliente', modulo:'seguimiento_procesal', roles:['admin','abogado','superadmin'], activo:true });
+  registerAction({ id:'gestionar-visibilidad-documento', nombre:'Gestionar visibilidad de documento', modulo:'expediente_digital', roles:['admin','abogado','superadmin'], activo:true });
+  registerAction({ id:'asignar-modelo-paralegal', nombre:'Asignar copia de modelo a paralegal', modulo:'flujo_paralegal', roles:['admin','abogado','superadmin'], activo:true });
 
   /* SQL Supabase requerido para el módulo Gestión:
      CREATE TABLE clientes (
@@ -3923,7 +3934,7 @@ body.connect-public-mode #page-connect { display:flex !important; }
   */
   registerModule({ id:'clientes',      nombre:'Clientes',               version:'0.0.0', descripcion:'CRM y gestión de clientes del despacho.',                   roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
   registerModule({ id:'facturacion',   nombre:'Facturación',            version:'0.0.0', descripcion:'Facturación, honorarios y pagos.',                          roles:['admin','superadmin'],           activo:false, estado:'pendiente' });
-  registerModule({ id:'documentos',    nombre:'Gestión Documental',     version:'0.0.0', descripcion:'Almacenamiento y gestión de documentos legales.',            roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
+  registerModule({ id:'documentos',    nombre:'Gestión Documental',     version:'1.0.0', descripcion:'Almacenamiento y gestión de documentos legales conectado al Expediente Digital.', roles:['admin','abogado','superadmin'], activo:true, estado:'activo', dependencias:['gestion'], meta:{storage:'leax-documentos'} });
   registerModule({ id:'ia_juridica',   nombre:'IA Jurídica',            version:'0.0.0', descripcion:'Análisis legal e inteligencia artificial aplicada.',        roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
   registerModule({ id:'firma',         nombre:'Firma Electrónica',      version:'0.0.0', descripcion:'Firma electrónica de documentos y contratos.',              roles:['admin','abogado','superadmin'], activo:false, estado:'pendiente' });
   registerModule({ id:'informes',      nombre:'Informes Automáticos',   version:'0.0.0', descripcion:'Generación automática de informes y reportes.',             roles:['admin','superadmin'],           activo:false, estado:'pendiente' });
