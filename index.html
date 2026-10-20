@@ -3873,6 +3873,11 @@ body.connect-public-mode #page-connect { display:flex !important; }
   registerModule({ id:'jurisprudencia',nombre:'Jurisprudencia',         version:'1.0.0', descripcion:'Portal de jurisprudencia con análisis IA simulado.',         roles:['admin','abogado','superadmin'], activo:true });
   registerModule({ id:'estadisticas',  nombre:'Estadísticas',           version:'1.0.0', descripcion:'Dashboard de métricas y estadísticas del despacho.',         roles:['admin','superadmin'],           activo:true });
   registerModule({ id:'connect',       nombre:'CONNECT',                version:'2.0.0', descripcion:'Módulo de consultas públicas, bandeja y seguimiento.',       roles:['admin','abogado','superadmin'], activo:true, dependencias:['core'], meta:{ supabase:true } });
+
+  // Rutas oficiales de acceso registradas en Llave Maestra.
+  // El controlador de entrada reutiliza las pantallas y permisos existentes.
+  registerRoute({ id:'acceso-profesional', path:'app', modulo:'core', roles:['superadmin','admin','abogado','paralegal'] });
+  registerRoute({ id:'connect-publico', path:'connect', modulo:'connect', roles:['*'] });
   registerModule({ id:'superadmin',    nombre:'SuperAdmin',             version:'1.0.0', descripcion:'Panel de administración global multi-empresa.',              roles:['superadmin'],                   activo:true });
 
   /* ══════════════════════════════════════════════
@@ -6654,6 +6659,18 @@ function applyConnectVisibility() {
   updateInboxBadge();
 }
 
+/* ── Entradas oficiales — Llave Maestra ──
+   /app: acceso interno para profesionales.
+   /connect y /: Connect público; / conserva compatibilidad.
+   ?portal=1: Portal del Cliente existente; se preserva.
+   La URL no asigna permisos: Supabase Auth, perfiles y RLS los validan.
+*/
+function getLeaxEntryRoute() {
+  if (new URLSearchParams(location.search).get('portal') === '1') return 'portal';
+  const path = location.pathname.replace(/\/+$/, '').toLowerCase();
+  return path === '/app' ? 'interno' : 'connect';
+}
+
 function ensurePublicLoginButton() {
   if (document.getElementById('connect-public-login')) return;
   const btn = document.createElement('button');
@@ -6665,7 +6682,7 @@ function ensurePublicLoginButton() {
   document.body.appendChild(btn);
 }
 function showPublicConnectMode() {
-  if (SESSION) return;
+  if (SESSION || getLeaxEntryRoute() !== 'connect') return;
   document.getElementById('auth-screen').style.display = 'none';
   document.getElementById('main-app').classList.add('visible');
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -6678,6 +6695,8 @@ function showPublicConnectMode() {
 }
 function showInternalLogin() {
   if (SESSION) return;
+  // Si se llegó desde Connect, actualizar a la ruta profesional compartible.
+  if (getLeaxEntryRoute() !== 'interno') history.replaceState(null, '', '/app');
   document.body.classList.remove('connect-public-mode');
   document.getElementById('connect-public-login')?.style && (document.getElementById('connect-public-login').style.display = 'none');
   document.getElementById('main-app').classList.remove('visible');
@@ -7750,7 +7769,12 @@ if (_nexlexOriginalDoLogoutForConnect && !_nexlexOriginalDoLogoutForConnect._con
   };
   doLogout._connectWrapped = true;
 }
-setTimeout(() => { if (!SESSION) showPublicConnectMode(); else applyConnectVisibility(); }, 0);
+setTimeout(() => {
+  if (!SESSION) {
+    if (getLeaxEntryRoute() === 'interno') showInternalLogin();
+    else if (getLeaxEntryRoute() === 'connect') showPublicConnectMode();
+  } else applyConnectVisibility();
+}, 0);
 
 /* ── Keyboard shortcuts for login ── */
 document.getElementById('l-pass').addEventListener('keydown',  e => { if (e.key === 'Enter') doLogin(); });
