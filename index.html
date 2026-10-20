@@ -8601,91 +8601,70 @@ function saveNuevoCaso(clienteId) {
   setTimeout(() => openCasoWorkspace(nuevo.id), 200);
 }
 
-/* ── Convertir consulta Connect → Cliente + Caso ── */
+/* ── Convertir consulta Connect → Cliente + Caso ──
+   Bloque A: la conversión es atómica, idempotente y validada por Supabase.
+   La interfaz actualiza su estado SOLO si la transacción fue confirmada.
+   Ninguna escritura local o upsert aislado precede a la confirmación remota.
+*/
+const _leaxConversionEnCurso = new Set();
 async function convertirConsultaEnCaso(consultaId) {
-  if (!can('write')) { toast('Sin permiso', 'err'); return; }
-  const inbox = getInboxConsultas();
-  const consulta = inbox.find(x => x.id === consultaId);
-  if (!consulta) { toast('Consulta no encontrada', 'err'); return; }
-  const clientesExistentes = getGestionClientes();
-  if (clientesExistentes.find(c => c.origenConnectId === consultaId)) {
-    toast('Esta consulta ya fue convertida', 'err'); return;
+  if (!SESSION || !can('write')) { toast('Sin permiso', 'err'); return; }
+  const empresaUuid = getEmpresaUuid();
+  if (!_supa || !empresaUuid) {
+    toast('No se pudo conectar con el servicio de expedientes. No se creó ningún caso.', 'err');
+    return;
   }
-  const nuevoCliente = {
-    id:             genClienteId(),
-    nombre:         consulta.nombre && consulta.nombre !== 'Anónimo' ? consulta.nombre : 'Cliente sin nombre',
-    tipo:           'personal',
-    telefono:       consulta.contactos?.tel   || '',
-    whatsapp:       consulta.contactos?.wa    || '',
-    email:          consulta.contactos?.email || '',
-    documento:      '',
-    notas:          `Originado desde LEAX | SJT Connect · Ref. ${consultaId}`,
-    favorito:       false,
-    archivado:      false,
-    tokenPortal:    null,
-    origenConnectId:consultaId,
-    numeroSeguimiento:consultaId,
-    portalActivo:false,
-    origen:'connect',
-    abogadoResponsableUserId:SESSION?.authUserId||SESSION?.id||null,
-    empresaId:      getEmpresaUuid(),
-    creadoPor:      SESSION?.email     || '',
-    fechaCreacion:  new Date().toISOString(),
-  };
-  clientesExistentes.unshift(nuevoCliente);
-  saveGestionClientes(clientesExistentes);
-  _supaUpsertCliente(nuevoCliente);
+  if (_leaxConversionEnCurso.has(consultaId)) {
+    toast('Esta consulta ya se está convirtiendo. Espera la confirmación.', 'err');
+    return;
+  }
 
-  const nuevoCaso = {
-    id:            genCasoId(),
-    clienteId:     nuevoCliente.id,
-    materia:       consulta.tipo   || 'Otro',
-    subtipo:       '',
-    tribunal:      '',
-    contraparte:   '',
-    numeroPJ:      '',
-    observaciones: consulta.descripcion || '',
-    estado:        'activo',
-    abogado:       consulta.abogadoAsignado || SESSION?.nombre || '',
-    abogadoUserId: SESSION?.authUserId || SESSION?.id || null,
-    origen:        'connect',
-    origenConnectId: consultaId,
-    portalVisible: true,
-    procedimientoKey: null,
-    procedimientoNombre: '',
-    etapaActual: '',
-    actuaciones:   [{
-      tipo:        'otro',
-      descripcion: `Caso originado desde LEAX | SJT Connect. Ref. ${consultaId}. Provincia: ${consulta.provincia||'—'}.`,
-      resultado:   '', proximoPaso:'', visible:true,
-      fecha:       new Date().toISOString(),
-      usuario:     SESSION?.nombre?.split(' ')[0]||'Sistema',
-    }],
-    fechaApertura:       new Date().toLocaleDateString('es-DO',{day:'2-digit',month:'2-digit',year:'numeric'}),
-    fechaCreacion:       new Date().toISOString(),
-    ultimaActualizacion: new Date().toISOString(),
-  };
-  const casos = getGestionCasos();
-  casos.unshift(nuevoCaso);
-  saveGestionCasos(casos);
-  await _supaUpsertCaso(nuevoCaso);
-  await _supaUpsertCliente(nuevoCliente);
+  _leaxConversionEnCurso.add(consultaId);
   try {
-    if (_supa) {
-      await _supa.from('consultas').update({convertida_en_caso:true,cliente_id:nuevoCliente.id,caso_id:nuevoCaso.id,fecha_conversion:new Date().toISOString(),convertido_por:SESSION?.authUserId||SESSION?.id||null,fecha_actualizacion:new Date().toISOString()}).eq('id',consultaId);
-      await _supa.from('documentos').update({cliente_id:nuevoCliente.id,caso_id:nuevoCaso.id}).eq('consulta_id',consultaId);
+    // La consulta, el actor y su empresa se validan EN EL SERVIDOR.
+    // La función bloquea la fila, realiza todas las escrituras y confirma o revierte.
+    const { data, error } = await _supa.rpc('leax_convertir_consulta_atomica', {
+      p_consulta_id: consultaId,
+      p_empresa_id: empresaUuid,
+    });
+    if (error) throw error;
+    if (!data?.cliente?.id || !data?.caso?.id) {
+      throw new Error('Supabase no confirmó una conversión completa.');
     }
-  } catch(e) { console.warn('[LEAX] Persistencia de conversión:',e); }
 
-  // Marcar consulta como convertida
-  const inboxList = getInboxConsultas();
-  const item = inboxList.find(x => x.id === consultaId);
-  if (item) { item.convertidaEnCaso = true; item.casoId = nuevoCaso.id; saveInboxCache(inboxList); }
+    const nuevoCliente = _rowToGestionCliente(data.cliente);
+    const nuevoCaso = _rowToGestionCaso(data.caso);
+    const clientes = getGestionClientes().filter(c => c.id !== nuevoCliente.id);
+    const casos = getGestionCasos().filter(c => c.id !== nuevoCaso.id);
+    clientes.unshift(nuevoCliente);
+    casos.unshift(nuevoCaso);
+    saveGestionClientes(clientes);
+    saveGestionCasos(casos);
 
-  toast(`✅ Cliente ${nuevoCliente.id} y Expediente ${nuevoCaso.id} creados desde Connect`, 'ok');
-  renderGestionClientes(); renderGestionCasos();
-  goPage('gestion');
-  setTimeout(() => openCasoWorkspace(nuevoCaso.id), 300);
+    const inboxList = getInboxConsultas();
+    const item = inboxList.find(x => x.id === consultaId);
+    if (item) {
+      item.convertidaEnCaso = true;
+      item.clienteId = nuevoCliente.id;
+      item.casoId = nuevoCaso.id;
+      saveInboxCache(inboxList);
+    }
+
+    if (data.ya_convertida) {
+      toast('Esta consulta ya estaba convertida. Se abrió el expediente existente.', 'ok');
+    } else {
+      toast(`✅ Cliente ${nuevoCliente.id} y Expediente ${nuevoCaso.id} creados desde Connect`, 'ok');
+    }
+    renderGestionClientes();
+    renderGestionCasos();
+    goPage('gestion');
+    setTimeout(() => openCasoWorkspace(nuevoCaso.id), 300);
+  } catch (e) {
+    console.error('[LEAX] No se pudo convertir la consulta de forma atómica:', e);
+    toast('No se completó la conversión: ' + (e?.message || 'verifica tu sesión e inténtalo nuevamente.'), 'err');
+  } finally {
+    _leaxConversionEnCurso.delete(consultaId);
+  }
 }
 
 /* ── Workspace del caso con cronología completa ── */
