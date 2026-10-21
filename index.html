@@ -7794,10 +7794,32 @@ let _gestionClientesCache = (() => {
 let _gestionCasosCache = (() => {
   try { return JSON.parse(_storage.getItem(GESTION_CASOS_KEY) || '[]') || []; } catch { return []; }
 })();
-function getGestionClientes() { return _gestionClientesCache; }
-function saveGestionClientes(list) { _gestionClientesCache = Array.isArray(list) ? list : []; }
-function getGestionCasos() { return _gestionCasosCache; }
-function saveGestionCasos(list) { _gestionCasosCache = Array.isArray(list) ? list : []; }
+let _gestionCacheEmpresaUuid = null;
+function _asegurarEmpresaGestion() {
+  const empresaUuid = SESSION ? getEmpresaUuid() : null;
+  if (!empresaUuid) return null;
+  if (_gestionCacheEmpresaUuid !== empresaUuid) {
+    if (_gestionCacheEmpresaUuid === null) {
+      // El legado solo se importa si declara expresamente la oficina correcta.
+      const propia = x => x && (x.empresaId === empresaUuid || x.empresa_id === empresaUuid);
+      _gestionClientesCache = _gestionClientesCache.filter(propia);
+      _gestionCasosCache = _gestionCasosCache.filter(propia);
+    } else {
+      _gestionClientesCache = [];
+      _gestionCasosCache = [];
+    }
+    _gestionCacheEmpresaUuid = empresaUuid;
+  }
+  return empresaUuid;
+}
+function getGestionClientes() { return _asegurarEmpresaGestion() ? _gestionClientesCache : []; }
+function saveGestionClientes(list) {
+  if (_asegurarEmpresaGestion()) _gestionClientesCache = Array.isArray(list) ? list : [];
+}
+function getGestionCasos() { return _asegurarEmpresaGestion() ? _gestionCasosCache : []; }
+function saveGestionCasos(list) {
+  if (_asegurarEmpresaGestion()) _gestionCasosCache = Array.isArray(list) ? list : [];
+}
 
 /* ── Supabase helpers para Gestión ── */
 function _rowToGestionCliente(row) {
@@ -7856,6 +7878,7 @@ function _rowToGestionCaso(row) {
 async function _supaUpsertCliente(c) {
   const empresaUuid = getEmpresaUuid();
   if (!_supa || !empresaUuid || !can('write')) return;
+  if ((c.empresaId || c.empresa_id) && (c.empresaId || c.empresa_id) !== empresaUuid) return;
   try {
     const row = {
       id: c.id, nombre: c.nombre, tipo: c.tipo||'personal',
@@ -7881,6 +7904,7 @@ async function _supaUpsertCliente(c) {
 async function _supaUpsertCaso(cs) {
   const empresaUuid = getEmpresaUuid();
   if (!_supa || !empresaUuid || !can('write')) return;
+  if ((cs.empresaId || cs.empresa_id) && (cs.empresaId || cs.empresa_id) !== empresaUuid) return;
   try {
     const row = {
       id: cs.id, cliente_id: cs.clienteId, empresa_id: empresaUuid, materia: cs.materia||'',
@@ -7903,43 +7927,51 @@ async function _supaUpsertCaso(cs) {
   } catch(e) { console.warn('[LEAX | SJT] Supabase caso exception:', e); }
 }
 
+let _gestionSyncVersion = 0;
 async function _syncGestionSupabase() {
-  const empresaUuid = getEmpresaUuid();
+  const empresaUuid = _asegurarEmpresaGestion();
   if (!_supa || !empresaUuid || !SESSION) return;
+  const actor = SESSION.authUserId || SESSION.id;
+  const version = ++_gestionSyncVersion;
+  const vigente = () => SESSION && (SESSION.authUserId || SESSION.id) === actor &&
+    getEmpresaUuid() === empresaUuid && version === _gestionSyncVersion;
   try {
     const [clRes, csRes] = await Promise.all([
       _supa.from('clientes')
         .select('id,nombre,tipo,telefono,whatsapp,email,documento,notas,token_portal,origen_connect_id,numero_seguimiento,portal_activo,portal_habilitado_at,origen,direccion,abogado_responsable_user_id,empresa_id,creado_por,favorito,archivado,fecha_creacion')
+        .eq('empresa_id', empresaUuid)
         .order('fecha_creacion', { ascending:false }),
       _supa.from('casos')
         .select('id,cliente_id,empresa_id,materia,subtipo,tribunal,contraparte,numero_pj,observaciones,abogado,abogado_user_id,origen_connect_id,procedimiento_key,procedimiento_nombre,portal_visible,etapa_actual,fecha_apertura,estado,origen,actuaciones,fecha_creacion,ultima_actualizacion')
+        .eq('empresa_id', empresaUuid)
         .order('fecha_creacion', { ascending:false }),
     ]);
-
+    if (!vigente()) return;
     if (clRes.error) throw clRes.error;
     if (csRes.error) throw csRes.error;
-
-    const remoteClientes = (clRes.data || []).map(_rowToGestionCliente);
-    const remoteCasos = (csRes.data || []).map(_rowToGestionCaso);
+    const remoteClientes = (clRes.data || []).filter(r => r.empresa_id === empresaUuid).map(_rowToGestionCliente);
+    const remoteCasos = (csRes.data || []).filter(r => r.empresa_id === empresaUuid).map(_rowToGestionCaso);
     const localClientes = getGestionClientes();
     const localCasos = getGestionCasos();
-
-    // Primera migración: si la nube está vacía y existen datos locales, subirlos.
+    // Solo migrar registros legados vinculados expresamente a esta empresa.
     if (!remoteClientes.length && localClientes.length && can('write')) {
-      for (const cli of localClientes) await _supaUpsertCliente(cli);
-    } else if (remoteClientes.length) {
+      for (const cli of localClientes) {
+        if (!vigente()) return;
+        await _supaUpsertCliente(cli);
+      }
+    } else {
       saveGestionClientes(remoteClientes);
     }
-
+    if (!vigente()) return;
     if (!remoteCasos.length && localCasos.length && can('write')) {
-      for (const caso of localCasos) await _supaUpsertCaso(caso);
-    } else if (remoteCasos.length) {
+      for (const caso of localCasos) {
+        if (!vigente()) return;
+        await _supaUpsertCaso(caso);
+      }
+    } else {
       saveGestionCasos(remoteCasos);
     }
-    try {
-      _storage.removeItem(GESTION_CLIENTES_KEY);
-      _storage.removeItem(GESTION_CASOS_KEY);
-    } catch {}
+    // Mantener respaldos locales legados hasta migración verificada.
   } catch (e) {
     console.warn('[LEAX | SJT] Sincronización de Gestión no disponible; se mantiene caché local:', e?.message || e);
   }
