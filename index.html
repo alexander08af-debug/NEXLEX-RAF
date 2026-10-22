@@ -4614,7 +4614,7 @@ async function solicitarRecuperacionLeax() {
   if (!box) return;
   const email = (document.getElementById('leax-recovery-email')?.value || '').trim().toLowerCase();
   box.classList.remove('show'); box.style.color = 'var(--red)';
-  if (!_supa || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+  if (!_supa || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     box.textContent = 'Introduce un correo válido.'; box.classList.add('show'); return;
   }
   const btn = document.querySelector('#form-leax-recuperar .auth-btn');
