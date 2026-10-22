@@ -2298,6 +2298,21 @@ body.connect-public-mode #page-connect { display:flex !important; }
         <input type="password" id="l-pass" placeholder="••••••••">
       </div>
       <button class="auth-btn" onclick="doLogin()">Entrar al sistema</button>
+      <button type="button" onclick="mostrarRecuperacionLeax('solicitar')" style="border:0;background:transparent;color:var(--brand);cursor:pointer;width:100%;padding:12px 0;font-size:12px">¿Olvidaste tu contraseña?</button>
+    </div>
+
+    <!-- Recuperación profesional: formulario independiente -->
+    <div class="auth-form" id="form-leax-recuperar">
+      <div class="auth-err" id="leax-recovery-err" role="status"></div>
+      <div class="auth-field"><label>Correo registrado</label><input id="leax-recovery-email" type="email" autocomplete="email" placeholder="abogado@empresa.com"></div>
+      <button class="auth-btn" type="button" onclick="solicitarRecuperacionLeax()">Enviar enlace de recuperación</button>
+      <button type="button" onclick="showAuthTab('login')" style="border:0;background:transparent;color:var(--fg3);cursor:pointer;width:100%;padding:12px 0;font-size:12px">Volver al inicio de sesión</button>
+    </div>
+    <div class="auth-form" id="form-leax-nueva-clave">
+      <div class="auth-err" id="leax-newpass-err" role="status"></div>
+      <div class="auth-field"><label>Nueva contraseña</label><input id="leax-newpass" type="password" minlength="8" autocomplete="new-password" placeholder="Mínimo 8 caracteres"></div>
+      <div class="auth-field"><label>Confirmar contraseña</label><input id="leax-newpass-confirm" type="password" minlength="8" autocomplete="new-password" placeholder="Repite tu contraseña"></div>
+      <button class="auth-btn" type="button" onclick="guardarNuevaClaveLeax()">Actualizar contraseña</button>
     </div>
 
     <!-- REGISTRO -->
@@ -4575,6 +4590,77 @@ function showAuthTab(tab) {
   document.getElementById('form-' + tab).classList.add('active');
 }
 
+
+/* Recuperación de credenciales mediante Supabase Auth; sin cambios en el login existente. */
+function _leaxEsRutaRecuperacion() {
+  const qs = new URLSearchParams(location.search);
+  const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+  return qs.get('reset') === '1' || qs.get('type') === 'recovery' || hash.get('type') === 'recovery';
+}
+function mostrarRecuperacionLeax(modo) {
+  if (SESSION) return;
+  if (!_leaxEsRutaRecuperacion() && getLeaxEntryRoute() !== 'interno') history.replaceState(null, '', '/app');
+  document.body.classList.remove('connect-public-mode');
+  document.getElementById('main-app').classList.remove('visible');
+  document.getElementById('auth-screen').style.display = 'flex';
+  document.querySelectorAll('.auth-form').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.auth-tab').forEach(el => el.classList.remove('active'));
+  document.getElementById(modo === 'nueva' ? 'form-leax-nueva-clave' : 'form-leax-recuperar').classList.add('active');
+  const email = document.getElementById('leax-recovery-email'), previo = document.getElementById('l-email');
+  if (email && !email.value && previo) email.value = previo.value.trim();
+}
+async function solicitarRecuperacionLeax() {
+  const box = document.getElementById('leax-recovery-err');
+  if (!box) return;
+  const email = (document.getElementById('leax-recovery-email')?.value || '').trim().toLowerCase();
+  box.classList.remove('show'); box.style.color = 'var(--red)';
+  if (!_supa || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
+    box.textContent = 'Introduce un correo válido.'; box.classList.add('show'); return;
+  }
+  const btn = document.querySelector('#form-leax-recuperar .auth-btn');
+  if (btn) btn.disabled = true;
+  try {
+    const {error} = await _supa.auth.resetPasswordForEmail(email,{redirectTo:location.origin + '/app?reset=1'});
+    if (error) throw error;
+    box.textContent = 'Si el correo tiene una cuenta, recibirás las instrucciones para recuperar el acceso.';
+    box.style.color = 'var(--green)'; box.classList.add('show');
+  } catch (e) {
+    box.textContent = 'No se pudo enviar el enlace. Inténtalo de nuevo.'; box.classList.add('show');
+    console.warn('[LEAX] Error al solicitar recuperación:',e?.message || e);
+  } finally { if (btn) btn.disabled = false; }
+}
+async function guardarNuevaClaveLeax() {
+  const box = document.getElementById('leax-newpass-err');
+  if (!box) return;
+  const password = document.getElementById('leax-newpass')?.value || '';
+  const confirm = document.getElementById('leax-newpass-confirm')?.value || '';
+  box.classList.remove('show'); box.style.color = 'var(--red)';
+  if (password.length < 8 || password !== confirm) {
+    box.textContent = 'La contraseña debe tener al menos 8 caracteres y coincidir en ambos campos.';
+    box.classList.add('show'); return;
+  }
+  const btn = document.querySelector('#form-leax-nueva-clave .auth-btn');
+  if (btn) btn.disabled = true;
+  try {
+    if (!_supa) throw new Error('Servicio no disponible.');
+    const {data,error:sessionError} = await _supa.auth.getSession();
+    if (sessionError || !data?.session?.user) throw new Error('Enlace vencido: solicita uno nuevo.');
+    const {error} = await _supa.auth.updateUser({password});
+    if (error) throw error;
+    await _supa.auth.signOut();
+    document.getElementById('leax-newpass').value = '';
+    document.getElementById('leax-newpass-confirm').value = '';
+    history.replaceState(null,'','/app');
+    showInternalLogin(); showAuthTab('login');
+    const ok = document.getElementById('login-err');
+    ok.textContent = 'Contraseña actualizada. Inicia sesión con tu nueva clave.';
+    ok.style.color = 'var(--green)'; ok.classList.add('show');
+  } catch (e) {
+    box.textContent = e?.message || 'No se pudo actualizar la contraseña.';
+    box.classList.add('show');
+  } finally { if (btn) btn.disabled = false; }
+}
+
 document.getElementById('r-empresa').addEventListener('change', function () {
   document.getElementById('r-empresa-nueva-wrap').style.display = this.value === 'NEW' ? 'block' : 'none';
 });
@@ -4753,6 +4839,7 @@ async function doLogout() {
 async function initSupabaseAuth() {
   if (!_supa) return;
   const portalRoute = new URLSearchParams(location.search).get('portal') === '1';
+  const resetRoute = _leaxEsRutaRecuperacion();
   try {
     const { data, error } = await _supa.auth.getSession();
     if (portalRoute) {
@@ -4760,12 +4847,16 @@ async function initSupabaseAuth() {
       if (!error && data?.session?.user) await loadClientPortal();
       return;
     }
+    if (resetRoute) {
+      mostrarRecuperacionLeax(!error && data?.session?.user ? 'nueva' : 'solicitar');
+      return;
+    }
     if (error || !data?.session?.user) return;
     const user = await _loadSupabaseUserProfile(data.session.user);
     iniciarSesion(user);
   } catch (e) {
     console.warn('[LEAX] Sesión previa inválida:', e);
-    if (!portalRoute) { try { await _supa.auth.signOut(); } catch {} }
+    if (!portalRoute && !resetRoute) { try { await _supa.auth.signOut(); } catch {} }
   }
 }
 
@@ -6351,11 +6442,14 @@ const _supa = (typeof supabase !== 'undefined') ? supabase.createClient(_SUPA_UR
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: false,
+    detectSessionInUrl: _leaxEsRutaRecuperacion(),
   },
   realtime: { params: { eventsPerSecond: 2 } },
 }) : null;
 
+if (_supa) _supa.auth.onAuthStateChange((event) => {
+  if (event === 'PASSWORD_RECOVERY') mostrarRecuperacionLeax('nueva');
+});
 setTimeout(()=>initSupabaseAuth(),0);
 
 /* Convierte objeto consulta LEAX | SJT → fila Supabase */
@@ -6667,6 +6761,7 @@ function applyConnectVisibility() {
 */
 function getLeaxEntryRoute() {
   if (new URLSearchParams(location.search).get('portal') === '1') return 'portal';
+  if (_leaxEsRutaRecuperacion()) return 'interno';
   const path = location.pathname.replace(/\/+$/, '').toLowerCase();
   return path === '/app' ? 'interno' : 'connect';
 }
