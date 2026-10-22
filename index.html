@@ -8737,6 +8737,7 @@ const _leaxConversionEnCurso = new Set();
 async function convertirConsultaEnCaso(consultaId) {
   if (!SESSION || !can('write')) { toast('Sin permiso', 'err'); return; }
   const empresaUuid = getEmpresaUuid();
+  const actorId = SESSION?.authUserId || SESSION?.id;
   if (!_supa || !empresaUuid) {
     toast('No se pudo conectar con el servicio de expedientes. No se creó ningún caso.', 'err');
     return;
@@ -8757,6 +8758,11 @@ async function convertirConsultaEnCaso(consultaId) {
     if (error) throw error;
     if (!data?.cliente?.id || !data?.caso?.id) {
       throw new Error('Supabase no confirmó una conversión completa.');
+    }
+    // No aplicar respuestas de un usuario/oficina anteriores a la caché actual.
+    if (!SESSION || (SESSION.authUserId || SESSION.id) !== actorId || getEmpresaUuid() !== empresaUuid) return;
+    if (data.cliente.empresa_id !== empresaUuid || data.caso.empresa_id !== empresaUuid) {
+      throw new Error('Supabase devolvió una conversión de otra oficina.');
     }
 
     const nuevoCliente = _rowToGestionCliente(data.cliente);
