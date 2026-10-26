@@ -4823,6 +4823,16 @@ async function doLogout() {
   const activeClient = _supa;
   SESSION = null;
   window._saViewEmpresa = null;
+  window._saViewEmpresaUuid = null;
+  // Limpiar exclusivamente memoria de esta sesión; no modificar respaldos locales.
+  _gestionClientesCache = [];
+  _gestionCasosCache = [];
+  _gestionCacheEmpresaUuid = null;
+  _inboxCache = [];
+  _inboxCacheEmpresaUuid = null;
+  document.getElementById('ob-overlay')?.remove();
+  document.getElementById('ob-tooltip')?.remove();
+  document.getElementById('ob-highlight')?.remove();
   stopInternalNotifications();
   clearAllIntervals();
   document.getElementById('main-app').classList.remove('visible');
@@ -6456,6 +6466,10 @@ const _supa = (typeof supabase !== 'undefined') ? supabase.createClient(_SUPA_UR
 
 if (_supa) _supa.auth.onAuthStateChange((event) => {
   if (event === 'PASSWORD_RECOVERY') mostrarRecuperacionLeax('nueva');
+  if (event === 'SIGNED_OUT' && SESSION) {
+    // Fuera del callback de Auth para no bloquear operaciones del SDK.
+    setTimeout(() => { if (SESSION) doLogout(); }, 0);
+  }
 });
 setTimeout(()=>initSupabaseAuth(),0);
 
@@ -9701,8 +9715,10 @@ function checkOnboarding(user) {
   if (user.rol === 'superadmin') return;
   if (ONBOARDING_EXCLUDED_IDS.includes(user.id)) return; // usuarios existentes: nunca
   if (_obCompleted(user.id)) return;                      // ya completó: nunca
-  // Es usuario nuevo — mostrar bienvenida con pequeño delay para que la UI cargue
-  setTimeout(() => showOnboardingWelcome(user), 600);
+  // No mostrar una bienvenida retrasada si el profesional salió o cambió de cuenta.
+  setTimeout(() => {
+    if (SESSION?.id === user.id && !_obCompleted(user.id)) showOnboardingWelcome(user);
+  }, 600);
 }
 
 /* ── Pantalla de bienvenida ── */
