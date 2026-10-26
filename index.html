@@ -8120,18 +8120,18 @@ async function _syncGestionSupabase() {
 function genClienteId() {
   const a = new Date().getFullYear();
   const existing = getGestionClientes();
-  let n = existing.length + 1;
   let id;
-  do { id = `CLI-${a}-${String(n).padStart(4,'0')}`; n++; }
+  // IDs globales: el consecutivo local podía repetirse entre dos oficinas distintas.
+  // Los identificadores antiguos mantienen su formato y continúan siendo válidos.
+  do { id = `CLI-${a}-${crypto.randomUUID().replace(/-/g,'').toUpperCase()}`; }
   while (existing.find(c => c.id === id));
   return id;
 }
 function genCasoId() {
   const a = new Date().getFullYear();
   const existing = getGestionCasos();
-  let n = existing.length + 1;
   let id;
-  do { id = `NCM-${a}-${String(n).padStart(4,'0')}`; n++; }
+  do { id = `NCM-${a}-${crypto.randomUUID().replace(/-/g,'').toUpperCase()}`; }
   while (existing.find(c => c.id === id));
   return id;
 }
