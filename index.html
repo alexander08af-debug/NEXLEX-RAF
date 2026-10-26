@@ -4792,6 +4792,7 @@ function iniciarSesion(user) {
   const publicLoginBtn = document.getElementById('connect-public-login');
   if (publicLoginBtn) publicLoginBtn.style.display = 'none';
 
+  _leaxRefrescarInboxEmpresa().catch(e => console.warn('[LEAX] Bandeja temporalmente no disponible:', e));
   initStatsMonthSelect();
   applyRoleUI();
 
@@ -6304,6 +6305,10 @@ function saChangeEmpresa(realEmpresaId) {
   });
   _syncLegalKnowledge();
   _syncDistributedContent();
+  getInboxConsultas();
+  updateInboxBadge();
+  if (document.getElementById('page-inbox')?.classList.contains('active')) renderInboxPage();
+  _leaxRefrescarInboxEmpresa().catch(e => console.warn('[LEAX] No se pudo refrescar bandeja:', e));
 
   renderSAQuickActions(localKey);
   renderSAContentItems();
@@ -6654,11 +6659,14 @@ async function deleteLegalDocument(documento) {
 
 /* Leer todas las consultas desde Supabase (autenticado) */
 async function _supaGetConsultas() {
-  if (!_supa || !can('write')) return [];
+  const empresa = getEmpresaUuid(), actor = SESSION?.authUserId || SESSION?.id;
+  if (!_supa || !SESSION || !empresa || !can('write')) return [];
   try {
-    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,descripcion,provincia,nombre,telefono,whatsapp,email,estado,abogado_asignado,observaciones,empresa_id,leida,fecha_creacion,fecha_actualizacion,convertida_en_caso,cliente_id,caso_id,fecha_conversion').order('fecha_creacion', { ascending: false });
+    const { data, error } = await _supa.from('consultas').select('id,codigo,tipo,descripcion,provincia,nombre,telefono,whatsapp,email,estado,abogado_asignado,observaciones,empresa_id,leida,fecha_creacion,fecha_actualizacion,convertida_en_caso,cliente_id,caso_id,fecha_conversion')
+      .eq('empresa_id', empresa).order('fecha_creacion', { ascending: false });
+    if (!SESSION || (SESSION.authUserId || SESSION.id) !== actor || getEmpresaUuid() !== empresa) return [];
     if (error) { console.warn('[LEAX | SJT] Supabase select error:', error.message); return []; }
-    return (data || []).map(_rowToConsulta);
+    return (data || []).filter(row => row.empresa_id === empresa).map(_rowToConsulta);
   } catch(e) {
     // DataCloneError ocurre en Safari/iOS al serializar Headers internamente
     if (e && (e.name === 'DataCloneError' || String(e).includes('DataCloneError') || String(e).includes('clone'))) {
@@ -7264,8 +7272,40 @@ const INBOX_KEY = 'nexlex_inbox_v1';
 let _inboxCache = (() => {
   try { return JSON.parse(_storage.getItem(INBOX_KEY) || '[]').map(normalizeConsulta); } catch { return []; }
 })();
-function getInboxConsultas() { return _inboxCache; }
-function saveInboxCache(list) { _inboxCache = Array.isArray(list) ? list.map(normalizeConsulta) : []; }
+/* Bandeja autenticada separada por oficina. El respaldo legado se conserva sin cambios. */
+let _inboxCacheEmpresaUuid = null;
+function _asegurarEmpresaInbox() {
+  const empresa = SESSION ? getEmpresaUuid() : null;
+  if (!empresa) return null;
+  if (_inboxCacheEmpresaUuid !== empresa) {
+    if (_inboxCacheEmpresaUuid === null) {
+      _inboxCache = Array.isArray(_inboxCache)
+        ? _inboxCache.filter(c => c && (c.empresaId === empresa || c.empresa_id === empresa))
+        : [];
+    } else {
+      _inboxCache = [];
+    }
+    _inboxCacheEmpresaUuid = empresa;
+  }
+  return empresa;
+}
+function getInboxConsultas() { return _asegurarEmpresaInbox() ? _inboxCache : []; }
+function saveInboxCache(list) {
+  const empresa = _asegurarEmpresaInbox();
+  if (!empresa) return;
+  _inboxCache = (Array.isArray(list) ? list : [])
+    .filter(c => c && ((!c.empresaId && !c.empresa_id) || (c.empresaId || c.empresa_id) === empresa))
+    .map(c => normalizeConsulta({ ...c, empresaId: empresa }));
+}
+async function _leaxRefrescarInboxEmpresa() {
+  const empresa = getEmpresaUuid(), actor = SESSION?.authUserId || SESSION?.id;
+  if (!_supa || !SESSION || !can('write') || !empresa) return;
+  const rows = await _supaGetConsultas();
+  if (!SESSION || (SESSION.authUserId || SESSION.id) !== actor || getEmpresaUuid() !== empresa) return;
+  if (rows.length || !getInboxConsultas().length) saveInboxCache(rows);
+  updateInboxBadge();
+  if (document.getElementById('page-inbox')?.classList.contains('active')) renderInboxPage();
+}
 
 async function saveToInbox(consulta) {
   const list = getInboxConsultas();
@@ -7339,9 +7379,11 @@ function renderInbox() {
   const el     = document.getElementById('inbox-list');
   const noEl   = document.getElementById('no-inbox');
   if (!el) return;
+  const empresa = getEmpresaUuid(), actor = SESSION?.authUserId || SESSION?.id;
   // Cargar de Supabase si está disponible
   _supaGetConsultas().then(supaList => {
-    // Supabase es la fuente principal; memoria de sesión como fallback temporal.
+    if (!SESSION || (SESSION.authUserId || SESSION.id) !== actor || getEmpresaUuid() !== empresa) return;
+    // Supabase es la fuente principal; memoria de la misma oficina como fallback temporal.
     const localList = getInboxConsultas();
     const merged = supaList.length > 0 ? supaList : localList;
     if (supaList.length > 0) {
