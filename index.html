@@ -6271,7 +6271,11 @@ function renderSABar() {
   if (!_adminDirectory?.loaded) {
     const current = SESSION?.empresaNombre || 'Grupo RAF';
     btns.innerHTML = `<button class="sa-empresa-btn active">${escapeHtml(current)}</button>`;
-    _refreshAdminDirectory().then(() => renderSABar()).catch(() => {});
+    _refreshAdminDirectory().then(() => {
+      renderSABar();
+      if (document.getElementById('page-inbox')?.classList.contains('active')) renderInboxPage();
+      if (document.getElementById('connect-inbox-view')?.classList.contains('active')) renderInbox();
+    }).catch(() => {});
     return;
   }
 
@@ -6835,7 +6839,33 @@ function formatCRMDate(value) {
 }
 
 function escapeHtml(str) { return String(str ?? '').replace(/[&<>'"]/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[ch])); }
-function getLawyerOptionsHtml(selected) { const selectedName = selected || 'Sin asignar'; const users = (typeof getUsersEmpresa === 'function' ? getUsersEmpresa() : DB_USUARIOS).filter(u => ['abogado','admin'].includes(u.rol) && u.activo !== false); const names = [...new Set([selectedName, getCurrentLawyerName(), ...users.map(u => u.nombre)].filter(Boolean).filter(n => n !== 'Sin asignar'))]; return `<option value="">Seleccionar abogado</option>` + names.map(n => `<option value="${escapeHtml(n)}" ${n === selectedName ? 'selected' : ''}>${escapeHtml(n)}</option>`).join(''); }
+/* Referencias externas: SOLO el superadmin las ve, sin conceder acceso o avisos. */
+function getLawyerOptionsHtml(selected) {
+  const selectedName = selected || 'Sin asignar';
+  const users = (typeof getUsersEmpresa === 'function' ? getUsersEmpresa() : DB_USUARIOS)
+    .filter(u => ['abogado','admin'].includes(u.rol) && u.activo !== false);
+  const ownNames = [...new Set([getCurrentLawyerName(), ...users.map(u => u.nombre)]
+    .filter(Boolean).filter(n => n !== 'Sin asignar'))];
+  const externals = isSuperAdmin() && _adminDirectory?.loaded
+    ? (_adminDirectory.profiles || []).filter(p =>
+        p.activo === true && p.empresa_id && p.empresa_id !== getEmpresaUuid()
+        && ['abogado','admin'].includes(_adminRoleKey(p.rol)) && p.nombre)
+    : [];
+  const externalNames = [...new Set(externals.map(p => p.nombre.trim()))]
+    .filter(n => !ownNames.includes(n)).sort((a,b) => a.localeCompare(b,'es'));
+  // Conservar selecciones anteriores aun si la oficina externa está desactivada.
+  if (selectedName !== 'Sin asignar' && !ownNames.includes(selectedName) && !externalNames.includes(selectedName))
+    ownNames.push(selectedName);
+  const local = ownNames.map(n =>
+    `<option value="${escapeHtml(n)}" ${n === selectedName ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('');
+  const external = externalNames.length
+    ? '<optgroup label="Profesionales externos · referencia sin acceso ni avisos">'
+      + externalNames.map(n =>
+        `<option value="${escapeHtml(n)}" ${n === selectedName ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')
+      + '</optgroup>' : '';
+  return '<option value="">Seleccionar abogado</option>'
+    + (local ? '<optgroup label="Mi oficina">'+local+'</optgroup>' : '') + external;
+}
 function renderEstadoOptions(selected) { const s = normalizeConnectEstado(selected); return CONNECT_ESTADOS.map(e => `<option value="${e.key}" ${s === e.key ? 'selected' : ''}>${e.label}</option>`).join(''); }
 function updateStoredConsultaById(id, updates) { const list = getStoredConsultas().map(c => c.id === id ? normalizeConsulta({ ...c, ...updates }) : c); try { _storage.setItem(CONNECT_STORAGE_KEY, JSON.stringify(list)); } catch {} }
 function syncConsultaFromInbox(item) { updateStoredConsultaById(item.id, { estado:normalizeConnectEstado(item.estadoInterno || item.estado), estadoInterno:normalizeConnectEstado(item.estadoInterno || item.estado), abogadoAsignado:item.abogadoAsignado || 'Sin asignar', fechaAsignacion:item.fechaAsignacion || '', leida:item.leida === true, noLeida:item.leida !== true, fechaRecepcion:item.fechaRecepcion || item.fechaRecibido || '', fechaRecibido:item.fechaRecibido || item.fechaRecepcion || '', fechaLectura:item.fechaLectura || '', fechaRespuesta:item.fechaRespuesta || '' }); }
