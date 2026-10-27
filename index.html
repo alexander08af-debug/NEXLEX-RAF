@@ -6453,11 +6453,16 @@ let _connectActiveTab  = 'form';
 ══════════════════════════════════════════ */
 const _SUPA_URL = 'https://cxjltgrlalezoxkbyvdt.supabase.co';
 const _SUPA_KEY = 'sb_publishable_-pbDm_3HTrnpIJQUIE5L-A_PgwM-4yI';
-/* Supabase Auth es la fuente de autenticación.
-   La sesión se persiste y renueva mediante el SDK; nunca se guardan contraseñas en LEAX. */
+/* Las cuentas profesionales y el Portal autenticado exigen login en cada carga.
+   Supabase guarda la sesión solo en memoria de la página, nunca en localStorage.
+   El seguimiento SIN cuenta de Connect sigue usando su almacenamiento independiente. */
+try {
+  // Solo retira el token de Auth guardado por versiones anteriores; no toca Connect.
+  localStorage.removeItem('sb-cxjltgrlalezoxkbyvdt-auth-token');
+} catch (_) { /* Modo privado o almacenamiento no disponible. */ }
 const _supa = (typeof supabase !== 'undefined') ? supabase.createClient(_SUPA_URL, _SUPA_KEY, {
   auth: {
-    persistSession: true,
+    persistSession: false,
     autoRefreshToken: true,
     detectSessionInUrl: _leaxEsRutaRecuperacion(),
   },
