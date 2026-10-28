@@ -4816,6 +4816,7 @@ function iniciarSesion(user) {
 
   ensureNotificationCenter();
   initInternalNotifications();
+  _leaxCargarPlazos(true).catch(e=>console.warn('[LEAX plazos]',e));
   checkOnboarding(user);
 }
 
@@ -4830,6 +4831,7 @@ async function doLogout() {
   _gestionCacheEmpresaUuid = null;
   _inboxCache = [];
   _inboxCacheEmpresaUuid = null;
+  _leaxPlazosData=[]; _leaxPlazosEmpresa=null;
   document.getElementById('ob-overlay')?.remove();
   document.getElementById('ob-tooltip')?.remove();
   document.getElementById('ob-highlight')?.remove();
@@ -6323,6 +6325,7 @@ function saChangeEmpresa(realEmpresaId) {
   updateInboxBadge();
   if (document.getElementById('page-inbox')?.classList.contains('active')) renderInboxPage();
   _leaxRefrescarInboxEmpresa().catch(e => console.warn('[LEAX] No se pudo refrescar bandeja:', e));
+  _leaxCargarPlazos().catch(e => console.warn('[LEAX plazos]',e));
 
   renderSAQuickActions(localKey);
   renderSAContentItems();
@@ -8215,7 +8218,7 @@ function switchGestionTab(tab) {
     const el = document.getElementById('gestion-panel-' + p);
     if (el) el.classList.toggle('active', p === tab);
   });
-  if (tab === 'dashboard') renderGestionDashboard();
+  if (tab === 'dashboard') { renderGestionDashboard(); _leaxCargarPlazos().catch(e=>console.warn('[LEAX plazos]',e)); }
   if (tab === 'clientes')  renderGestionClientes();
   if (tab === 'casos')     renderGestionCasos();
 }
@@ -8893,6 +8896,131 @@ async function convertirConsultaEnCaso(consultaId) {
   }
 }
 
+
+/* LEAX | SJT · Plazos procesales. Solo datos confirmados, privados por oficina. */
+let _leaxPlazosData=[],_leaxPlazosEmpresa=null,_leaxPlazosSecuencia=0;
+const _leaxPlazosAvisos=new Set();
+function _leaxHoyRD(){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santo_Domingo',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());}
+function _leaxDiasEntre(fecha){return Math.round((Date.parse(fecha+'T00:00:00Z')-Date.parse(_leaxHoyRD()+'T00:00:00Z'))/86400000);}
+function _leaxProponerFecha(origen,dias,tipo){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(origen)||!Number.isInteger(dias)||dias<1||dias>3650)return '';
+  const d=new Date(origen+'T12:00:00Z');if(Number.isNaN(d.getTime()))return '';
+  let n=0;while(n<dias){d.setUTCDate(d.getUTCDate()+1);if(tipo==='habiles'&&[0,6].includes(d.getUTCDay()))continue;n++;}
+  return d.toISOString().slice(0,10);
+}
+function _leaxPlazoBadge(row){
+  if(row.estado!=='pendiente')return {label:row.estado==='cumplido'?'✓ Cumplido':'Cancelado',color:'var(--fg3)'};
+  const n=_leaxDiasEntre(row.fecha_vencimiento);
+  return n<0?{label:'VENCIDO hace '+(-n)+' día(s)',color:'var(--red)'}:
+    n===0?{label:'VENCE HOY',color:'var(--red)'}:
+    {label:'Faltan '+n+' día(s)',color:n<=row.alertar_dias?'var(--amber)':'var(--green)'};
+}
+function _leaxMostrarPlazosCaso(casoId){
+  const root=document.getElementById('modal-caso-ws');
+  if(!root)return;
+  let panel=root.querySelector('#leax-plazos-panel');
+  if(!panel){
+    panel=document.createElement('section');panel.id='leax-plazos-panel';
+    panel.style.cssText='padding:14px 28px;border-bottom:1px solid var(--border);background:rgba(251,191,36,.035)';
+    const form=can('write')?
+      '<div style="display:flex;flex-direction:column;gap:7px">'+
+      '<input id="plazo-titulo" maxlength="240" placeholder="Obligación: depositar escrito de conclusiones" style="padding:8px;background:var(--card);color:var(--fg);border:1px solid var(--border);border-radius:7px">'+
+      '<div style="display:flex;flex-wrap:wrap;gap:10px">'+
+      '<label style="font-size:10px">Origen <input type="date" id="plazo-origen" value="'+_leaxHoyRD()+'" style="display:block"></label>'+
+      '<label style="font-size:10px">Días <input type="number" id="plazo-cantidad" value="15" min="1" max="3650" style="display:block;width:65px"></label>'+
+      '<label style="font-size:10px">Tipo <select id="plazo-tipo" style="display:block"><option value="calendario">Calendario</option><option value="habiles">Hábiles, sin feriados</option><option value="fecha_fija">Fecha fija</option></select></label>'+
+      '<button class="btn btn-ghost btn-sm" onclick="_leaxPlazoCalcular()">Proponer fecha</button></div>'+
+      '<div style="display:flex;flex-wrap:wrap;gap:10px">'+
+      '<label style="font-size:10px">Vencimiento confirmado <input type="date" id="plazo-vence" style="display:block"></label>'+
+      '<label style="font-size:10px">Avisar antes <select id="plazo-aviso" style="display:block"><option value="7">7 días</option><option value="5" selected>5 días</option><option value="3">3 días</option><option value="1">1 día</option><option value="0">El día del vencimiento</option></select></label></div>'+
+      '<label style="font-size:10px"><input type="checkbox" id="plazo-validado"> Confirmé el cómputo del plazo conforme a la decisión judicial y la normativa aplicable.</label>'+
+      '<button class="btn btn-accent btn-sm" style="align-self:start" onclick="_leaxPlazoGuardar()">＋ Registrar plazo procesal</button></div>':'';
+    panel.innerHTML='<div style="font-size:12px;font-weight:700;margin-bottom:8px">⏳ Plazos procesales · obligaciones pendientes</div><div id="plazo-caso-lista" style="font-size:11px;color:var(--fg2);margin-bottom:12px">Cargando…</div>'+form;
+    panel.dataset.casoId=casoId;
+    const docInput=root.querySelector('[id^="doc-cat-"]');
+    const docSection=docInput?.closest('div[style*="padding:14px 28px"]');
+    if(docSection)docSection.insertAdjacentElement('beforebegin',panel);
+    else root.querySelector('div[style*="flex-direction:column"]')?.appendChild(panel);
+  }
+  _leaxPlazosPintar();
+  _leaxCargarPlazos().catch(e=>console.warn('[LEAX plazos]',e));
+}
+function _leaxPlazoCalcular(){
+  const v=id=>document.getElementById(id)?.value||'';
+  if(v('plazo-tipo')==='fecha_fija'){toast('Indica la fecha indicada por el tribunal','ok');return;}
+  const date=_leaxProponerFecha(v('plazo-origen'),Number(v('plazo-cantidad')),v('plazo-tipo'));
+  if(!date){toast('Revisa fecha y días','err');return;}
+  document.getElementById('plazo-vence').value=date;
+  document.getElementById('plazo-validado').checked=false;
+  toast('Fecha sugerida: confirma el cómputo jurídico, feriados y suspensiones','ok');
+}
+function _leaxPlazosPintar(){
+  const panel=document.getElementById('leax-plazos-panel');
+  if(panel){
+    const id=panel.dataset.casoId,box=document.getElementById('plazo-caso-lista');
+    const rows=_leaxPlazosData.filter(r=>r.caso_id===id);
+    if(box)box.innerHTML=rows.length?rows.map(row=>{
+      const badge=_leaxPlazoBadge(row);
+      return '<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:6px;padding:9px;display:flex;justify-content:space-between;gap:8px"><div><strong>'+escapeHtml(row.titulo)+'</strong><div style="color:'+badge.color+'">'+escapeHtml(badge.label)+' · '+escapeHtml(row.fecha_vencimiento)+'</div></div>'
+        +(row.estado==='pendiente'&&can('write')?'<button class="btn btn-green btn-sm" data-plazo="'+row.id+'" onclick="_leaxPlazoCumplir(this.dataset.plazo)">✓ Cumplido</button>':'')+'</div>';
+    }).join(''):'Sin plazos procesales registrados.';
+  }
+  let dashboard=document.getElementById('leax-plazos-dashboard');
+  const kpis=document.getElementById('gestion-kpis');
+  if(!dashboard&&kpis){dashboard=document.createElement('div');dashboard.id='leax-plazos-dashboard';dashboard.style.cssText='margin-bottom:16px;padding:15px;background:var(--card);border:1px solid var(--border);border-radius:12px';kpis.insertAdjacentElement('beforebegin',dashboard);}
+  if(dashboard){
+    const pending=_leaxPlazosData.filter(r=>r.estado==='pendiente').sort((a,b)=>a.fecha_vencimiento.localeCompare(b.fecha_vencimiento));
+    dashboard.innerHTML='<strong style="font-size:12px">⏳ Plazos procesales · '+pending.length+' pendiente(s)</strong>'
+      +(pending.length?pending.slice(0,12).map(row=>{
+        const b=_leaxPlazoBadge(row);
+        return '<div style="padding:8px 0;border-top:1px solid var(--border);font-size:11px"><strong style="color:'+b.color+'">'+escapeHtml(b.label)+'</strong> · '+escapeHtml(row.titulo)+' · '+escapeHtml(row.caso_id)+' · '+escapeHtml(row.fecha_vencimiento)+'</div>';
+      }).join(''):'<div style="color:var(--fg3);font-size:11px;margin-top:8px">No hay plazos pendientes.</div>');
+  }
+}
+async function _leaxCargarPlazos(alertar=false){
+  const company=SESSION?getEmpresaUuid():null,actor=SESSION?.authUserId||SESSION?.id,seq=++_leaxPlazosSecuencia;
+  if(!company||!_supa)return;
+  if(_leaxPlazosEmpresa!==company){_leaxPlazosEmpresa=company;_leaxPlazosData=[];_leaxPlazosPintar();}
+  const {data,error}=await _supa.from('plazos_procesales').select('id,empresa_id,caso_id,titulo,fecha_origen,fecha_vencimiento,alertar_dias,estado').eq('empresa_id',company).order('fecha_vencimiento',{ascending:true}).limit(250);
+  if(!SESSION||seq!==_leaxPlazosSecuencia||company!==getEmpresaUuid()||actor!==(SESSION.authUserId||SESSION.id))return;
+  if(error){console.warn('[LEAX plazos]',error.message);return;}
+  _leaxPlazosData=(data||[]).filter(r=>r.empresa_id===company);
+  _leaxPlazosPintar();
+  if(alertar)for(const row of _leaxPlazosData){
+    if(row.estado!=='pendiente'||_leaxDiasEntre(row.fecha_vencimiento)>row.alertar_dias)continue;
+    const key=company+':'+row.id+':'+_leaxHoyRD();if(_leaxPlazosAvisos.has(key))continue;
+    _leaxPlazosAvisos.add(key);
+    toast('⏳ Plazo: '+row.titulo+' — '+_leaxPlazoBadge(row).label,'err');
+  }
+}
+async function _leaxPlazoGuardar(){
+  if(!can('write')||!SESSION)return;
+  const panel=document.getElementById('leax-plazos-panel'),casoId=panel?.dataset.casoId;
+  const v=id=>document.getElementById(id)?.value||'';
+  const titulo=v('plazo-titulo').trim(),origen=v('plazo-origen'),fecha=v('plazo-vence'),tipo=v('plazo-tipo'),dias=Number(v('plazo-cantidad'));
+  if(!getGestionCasos().some(c=>c.id===casoId)||titulo.length<3||!origen||!fecha||!document.getElementById('plazo-validado')?.checked){toast('Verifica los datos y confirma la fecha jurídica','err');return;}
+  if(!Number.isFinite(Date.parse(fecha+'T00:00:00Z'))||fecha<origen){toast('Fecha de vencimiento inválida','err');return;}
+  const company=getEmpresaUuid(),actor=SESSION.authUserId||SESSION.id;
+  const {error}=await _supa.from('plazos_procesales').insert({
+    empresa_id:company,caso_id:casoId,titulo,fecha_origen:origen,fecha_vencimiento:fecha,
+    tipo_dias:tipo,cantidad_dias:tipo==='fecha_fija'?null:dias,fecha_verificada:true,alertar_dias:Number(v('plazo-aviso')),creado_por:actor
+  });
+  if(error){toast('No se pudo guardar el plazo: '+error.message,'err');return;}
+  toast('Plazo registrado correctamente','ok');
+  document.getElementById('plazo-titulo').value='';
+  document.getElementById('plazo-validado').checked=false;
+  await _leaxCargarPlazos(true);
+}
+async function _leaxPlazoCumplir(id){
+  if(!can('write')||!confirm('¿Confirmas que cumpliste la obligación procesal?'))return;
+  const company=getEmpresaUuid(),row=_leaxPlazosData.find(p=>p.id===id&&p.estado==='pendiente');
+  if(!row)return;
+  const {data,error}=await _supa.from('plazos_procesales').update({estado:'cumplido',cumplido_at:new Date().toISOString()})
+    .eq('empresa_id',company).eq('id',id).eq('estado','pendiente').select('id');
+  if(error||!data?.length){toast('No se pudo marcar cumplido','err');return;}
+  toast('Plazo marcado como cumplido','ok');await _leaxCargarPlazos();
+}
+
 /* ── Workspace del caso con cronología completa ── */
 function openCasoWorkspace(id) {
   const cs  = getGestionCasos().find(x => x.id === id);
@@ -9024,6 +9152,7 @@ function openCasoWorkspace(id) {
     </div>`;
   document.body.insertAdjacentHTML('beforeend', html);
   loadCaseDocuments(cs.id);
+  _leaxMostrarPlazosCaso(cs.id);
 }
 
 /* ── Tipos de actuación ── */
